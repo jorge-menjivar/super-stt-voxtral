@@ -1,0 +1,8 @@
+/target
+
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+docs/design/
+docs/superpowers/
+.superpowers/

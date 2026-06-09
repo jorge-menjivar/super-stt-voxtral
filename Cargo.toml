@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Standalone Voxtral subprocess backend. Depends only on third-party crates —
+# no super-stt code. Excluded from the workspace (own Cargo.lock).
+
+[package]
+    name = "super-stt-backend-voxtral"
+    version = "0.1.0"
+    edition = "2024"
+    license = "GPL-3.0-only"
+    publish = false
+
+# Own workspace root — never absorbed into a parent workspace.
+[workspace]
+
+# cross (cross-rs): forward CUDA_COMPUTE_CAP into the build container so candle's
+# kernels compile for the requested compute capability — `nvidia-smi` isn't
+# available inside `docker build`, so without this candle-kernels fails to detect
+# the cap. The release workflow sets CUDA_COMPUTE_CAP per matrix entry.
+[workspace.metadata.cross.build.env]
+    passthrough = ["CUDA_COMPUTE_CAP"]
+
+[dependencies]
+    anyhow = "1"
+    axum = { version = "0.8", default-features = false, features = ["json", "tokio"] }
+    byteorder = "1.5"
+    # Pinned to the same candle revision the daemon resolves, so the
+    # candle_transformers Voxtral API matches.
+    candle-core = {
+        git = "https://github.com/huggingface/candle.git",
+        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+    }
+    candle-nn = {
+        git = "https://github.com/huggingface/candle.git",
+        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+    }
+    candle-transformers = {
+        git = "https://github.com/huggingface/candle.git",
+        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+    }
+    env_logger = "0.11"
+    hyper = { version = "1", features = ["http1", "server"] }
+    hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }
+    log = "0.4"
+    serde = { version = "1", features = ["derive"] }
+    serde_json = "1"
+    tekken-rs = "0.1.1"
+    tokio = {
+        version = "1",
+        features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync"]
+    }
+
+[dev-dependencies]
+    bytes = "1"
+    hound = "3.5"
+    http-body-util = "0.1"
+    hyper = { version = "1", features = ["client", "http1"] }
+    tempfile = "3"
+    # `ServiceExt::oneshot` for in-process router/handler tests.
+    tower = { version = "0.5", features = ["util"] }
+
+[features]
+    default = []
+    cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+    flash-attn = ["candle-transformers/flash-attn"]
