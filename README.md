@@ -1,5 +1,7 @@
 # Super STT — Voxtral backend
 
+[![coverage](https://img.shields.io/endpoint?url=https://jorge-menjivar.github.io/super-stt-voxtral/coverage.json)](https://jorge-menjivar.github.io/super-stt-voxtral/)
+
 A speech-to-text backend for **[Super STT](https://github.com/jorge-menjivar/super-stt)**.
 It runs [Mistral's Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)
 models locally on your GPU to turn speech into text.
