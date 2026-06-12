@@ -121,3 +121,56 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
+
+  # Publish the browsable HTML coverage report to GitHub Pages (main only).
+  # One-time setup: repo Settings → Pages → Source = "GitHub Actions".
+  # Served at https://<owner>.github.io/super-stt-voxtral/.
+  coverage-pages:
+    name: Coverage (Pages)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Serialize deploys; never cancel an in-flight Pages deployment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-llvmcov-${{ hashFiles('**/Cargo.lock') }}
+
+      # Same CPU-only scope as the lcov job: renders the static report to
+      # target/llvm-cov/html/ (the GPU/weights-gated decode path self-skips).
+      - name: Generate HTML coverage report
+        run: just coverage --html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/llvm-cov/html
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

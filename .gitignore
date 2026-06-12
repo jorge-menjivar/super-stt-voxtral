@@ -1,5 +1,11 @@
 /target
 
+# Coverage artifacts (cargo-llvm-cov). `just coverage-lcov` writes lcov.info to
+# the repo root; the HTML report lives under target/. Profiles can land in CWD.
+/lcov.info
+*.profraw
+*.profdata
+
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 
