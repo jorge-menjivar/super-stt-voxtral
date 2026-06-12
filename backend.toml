@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-#:schema https://raw.githubusercontent.com/jorge-menjivar/super-stt/main/schemas/backend.schema.json
+#:schema https://jorge-menjivar.github.io/super-stt/backend.schema.json
 # Voxtral (local, GPU) subprocess backend. See docs/protocol/backend/.
 
 [backend]
