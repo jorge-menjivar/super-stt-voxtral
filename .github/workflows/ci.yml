@@ -173,10 +173,10 @@ jobs:
           set -euo pipefail
           pct=$(cargo llvm-cov report --json --summary-only \
             | jq -r '.data[0].totals.lines.percent')
-          if   awk "BEGIN{exit !($pct>=80)}"; then color=brightgreen
-          elif awk "BEGIN{exit !($pct>=60)}"; then color=green
-          elif awk "BEGIN{exit !($pct>=40)}"; then color=yellow
-          elif awk "BEGIN{exit !($pct>=20)}"; then color=orange
+          if   awk "BEGIN{exit !($pct>=90)}"; then color=brightgreen
+          elif awk "BEGIN{exit !($pct>=75)}"; then color=green
+          elif awk "BEGIN{exit !($pct>=60)}"; then color=yellow
+          elif awk "BEGIN{exit !($pct>=40)}"; then color=orange
           else color=red
           fi
           printf '{"schemaVersion":1,"label":"coverage","message":"%.1f%%","color":"%s"}\n' \
