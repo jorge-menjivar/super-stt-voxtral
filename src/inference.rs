@@ -22,6 +22,8 @@ use log::{info, warn};
 use tekken::Tekkenizer;
 
 const SAMPLE_RATE: u32 = 16000;
+// VoxtralProcessor pads audio to a multiple of 480000 samples (30 s @ 16 kHz).
+const CHUNK_SAMPLES: usize = 480_000;
 const MEL_FILTERS: &[u8] = include_bytes!("data/melfilters128.bytes");
 
 /// A loaded Voxtral model ready to transcribe 16 kHz mono audio.
@@ -54,8 +56,7 @@ impl VoxtralEngine {
         let tokenizer = Tekkenizer::from_file(&files.tokenizer).map_err(Error::msg)?;
         let cache = VoxtralCache::new(true, DType::F16, &config.text_config, &device)?;
 
-        let mut mel_filters = vec![0f32; MEL_FILTERS.len() / 4];
-        Cursor::new(MEL_FILTERS).read_f32_into::<LittleEndian>(&mut mel_filters)?;
+        let mel_filters = load_mel_filters()?;
 
         let audio_token_id = config.audio_token_id;
         info!("Voxtral model loaded on {device:?}");
@@ -71,11 +72,7 @@ impl VoxtralEngine {
 
     /// Device label for `GET /v1/status`.
     pub fn device_label(&self) -> &'static str {
-        match &self.device {
-            Device::Cpu => "cpu",
-            Device::Cuda(_) => "cuda",
-            Device::Metal(_) => "metal",
-        }
+        device_str(&self.device)
     }
 
     /// Transcribe 16 kHz mono f32 audio. (The daemon resamples upstream.)
@@ -84,16 +81,7 @@ impl VoxtralEngine {
             warn!("Voxtral expects {SAMPLE_RATE}Hz; got {sample_rate}Hz (daemon should resample)");
         }
 
-        // VoxtralProcessor pads audio to a multiple of 480000 samples (30s).
-        let chunk_size = 480_000;
-        let padded_audio = if audio_data.len().is_multiple_of(chunk_size) {
-            audio_data.to_vec()
-        } else {
-            let target = ((audio_data.len() / chunk_size) + 1) * chunk_size;
-            let mut p = audio_data.to_vec();
-            p.resize(target, 0.0);
-            p
-        };
+        let padded_audio = pad_to_chunk(audio_data, CHUNK_SAMPLES);
 
         let audio_features =
             audio::extract_features(&padded_audio, &self.mel_filters, &self.device)?;
@@ -143,6 +131,35 @@ fn resolve_files(dir: &Path) -> Result<ModelFiles> {
         tokenizer,
         weights,
     })
+}
+
+/// Wire label for a candle device — used by `GET /v1/status`.
+fn device_str(device: &Device) -> &'static str {
+    match device {
+        Device::Cpu => "cpu",
+        Device::Cuda(_) => "cuda",
+        Device::Metal(_) => "metal",
+    }
+}
+
+/// Decode the embedded little-endian f32 mel-filter bank.
+fn load_mel_filters() -> Result<Vec<f32>> {
+    let mut mel_filters = vec![0f32; MEL_FILTERS.len() / 4];
+    Cursor::new(MEL_FILTERS).read_f32_into::<LittleEndian>(&mut mel_filters)?;
+    Ok(mel_filters)
+}
+
+/// Pad `audio` up to a whole multiple of `chunk` samples, zero-filling the tail.
+/// Input already aligned to `chunk` (including empty input) is returned as-is.
+fn pad_to_chunk(audio: &[f32], chunk: usize) -> Vec<f32> {
+    if audio.len().is_multiple_of(chunk) {
+        audio.to_vec()
+    } else {
+        let target = ((audio.len() / chunk) + 1) * chunk;
+        let mut p = audio.to_vec();
+        p.resize(target, 0.0);
+        p
+    }
 }
 
 /// Clean up Voxtral output formatting artifacts. (Ported verbatim.)
@@ -488,5 +505,93 @@ mod tests {
     #[test]
     fn flash_attn_is_off_without_the_feature() {
         assert!(!use_flash_attn());
+    }
+
+    #[test]
+    fn pad_to_chunk_leaves_exact_multiples_unchanged() {
+        let a = vec![0.5f32; 8];
+        assert_eq!(pad_to_chunk(&a, 4), a);
+    }
+
+    #[test]
+    fn pad_to_chunk_rounds_up_and_zero_fills() {
+        let p = pad_to_chunk(&[1.0f32; 5], 4);
+        assert_eq!(p.len(), 8);
+        assert_eq!(&p[..5], &[1.0; 5]);
+        assert_eq!(&p[5..], &[0.0; 3]);
+    }
+
+    #[test]
+    fn pad_to_chunk_pads_sub_chunk_input_to_one_chunk() {
+        assert_eq!(pad_to_chunk(&[1.0f32], 4).len(), 4);
+    }
+
+    #[test]
+    fn pad_to_chunk_empty_stays_empty() {
+        // NOTE: 0 is a multiple of any chunk, so empty audio yields ZERO chunks.
+        // Pins current behavior — see playbook; may warrant an upstream guard.
+        assert!(pad_to_chunk(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn mel_filters_decode_to_expected_count() {
+        assert_eq!(
+            MEL_FILTERS.len() % 4,
+            0,
+            "embedded mel blob must be f32-aligned"
+        );
+        let f = load_mel_filters().unwrap();
+        assert_eq!(f.len(), MEL_FILTERS.len() / 4);
+        assert!(!f.is_empty());
+        assert!(f.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn device_str_maps_cpu() {
+        assert_eq!(device_str(&Device::Cpu), "cpu");
+    }
+
+    #[test]
+    fn audio_config_maps_fields() {
+        let json = serde_json::json!({"audio_config": {
+            "num_mel_bins": 80,
+            "head_dim": 32,
+            "scale_embedding": true,
+            "num_attention_heads": 16,
+            "activation_function": "relu"
+        }});
+        let cfg = parse_audio_config(&json).unwrap();
+        assert_eq!(cfg.num_mel_bins, 80);
+        assert_eq!(cfg.head_dim, 32);
+        assert!(cfg.scale_embedding);
+        assert_eq!(cfg.num_attention_heads, 16);
+        assert_eq!(cfg.activation_function, "relu");
+    }
+
+    #[test]
+    fn text_config_ties_embeddings_from_attention_bias_key() {
+        // Surprising mapping: tie_word_embeddings is read from the `attention_bias`
+        // JSON key. Pin it so a refactor can't silently rewire it.
+        let cfg = parse_text_config(&serde_json::json!({"text_config": {"attention_bias": true}}))
+            .unwrap();
+        assert!(cfg.tie_word_embeddings);
+        let cfg = parse_text_config(&serde_json::json!({"text_config": {}})).unwrap();
+        assert!(!cfg.tie_word_embeddings);
+    }
+
+    #[test]
+    fn text_config_casts_rope_theta_to_f32() {
+        let cfg =
+            parse_text_config(&serde_json::json!({"text_config": {"rope_theta": 1.0e7}})).unwrap();
+        assert!((cfg.rope_theta - 10_000_000.0_f32).abs() < 1.0);
+    }
+
+    #[test]
+    fn text_config_head_dim_is_optional() {
+        let none = parse_text_config(&serde_json::json!({"text_config": {}})).unwrap();
+        assert!(none.head_dim.is_none());
+        let some =
+            parse_text_config(&serde_json::json!({"text_config": {"head_dim": 64}})).unwrap();
+        assert_eq!(some.head_dim, Some(64));
     }
 }

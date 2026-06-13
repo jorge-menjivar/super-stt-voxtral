@@ -314,6 +314,57 @@ mod tests {
         assert_eq!(json_body(resp).await["message"], "not_ready");
     }
 
+    #[test]
+    fn load_state_wire_strings() {
+        assert_eq!(LoadState::Starting.as_str(), "starting");
+        assert_eq!(LoadState::Loading.as_str(), "loading");
+        assert_eq!(LoadState::Ready.as_str(), "ready");
+        assert_eq!(LoadState::Error.as_str(), "error");
+    }
+
+    #[tokio::test]
+    async fn status_includes_populated_fields() {
+        let state = test_state();
+        {
+            let mut st = state.status.lock().unwrap();
+            st.state = LoadState::Ready;
+            st.model = Some("voxtral-mini".to_string());
+            st.device = Some("cuda".to_string());
+            st.reason = Some("recovered".to_string());
+        }
+        let resp = router(state)
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = json_body(resp).await;
+        assert_eq!(v["state"], "ready");
+        assert_eq!(v["model"]["name"], "voxtral-mini");
+        assert_eq!(v["device"], "cuda");
+        assert_eq!(v["reason"], "recovered");
+    }
+
+    #[tokio::test]
+    async fn load_sets_model_name_synchronously() {
+        // The handler sets the model name before spawning the load task, and the
+        // error path leaves it intact — so it's readable right after the 202.
+        let state = test_state();
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini", "device": "cpu" })).unwrap();
+        let resp = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/v1/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            state.status.lock().unwrap().model.as_deref(),
+            Some("voxtral-mini")
+        );
+    }
+
     #[tokio::test]
     async fn load_missing_weights_transitions_to_error() {
         // backend_dir is a temp dir with no models/, so the load fails fast.
