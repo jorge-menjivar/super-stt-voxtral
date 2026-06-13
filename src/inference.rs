@@ -528,8 +528,9 @@ mod tests {
 
     #[test]
     fn pad_to_chunk_empty_stays_empty() {
-        // NOTE: 0 is a multiple of any chunk, so empty audio yields ZERO chunks.
-        // Pins current behavior — see playbook; may warrant an upstream guard.
+        // 0 is a multiple of any chunk, so empty input yields ZERO chunks. The
+        // transcribe handler now rejects empty audio (400 invalid_audio) before it
+        // can reach here; this just pins the helper's own behavior at the boundary.
         assert!(pad_to_chunk(&[], 4).is_empty());
     }
 

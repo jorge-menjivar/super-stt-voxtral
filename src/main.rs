@@ -208,6 +208,15 @@ async fn transcribe(
             Json(json!({ "status": "error", "message": "not_ready" })),
         );
     }
+    // Contract: empty `audio_data` is a client error, not an inference failure
+    // (docs/protocol/backend/contract.md → 400 invalid_audio). Guarding here also
+    // keeps an empty buffer out of the engine's chunk-padding (0 → zero chunks).
+    if req.audio_data.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "error", "message": "invalid_audio" })),
+        );
+    }
     let sample_rate = req.sample_rate.unwrap_or(16000);
     let audio = req.audio_data;
     let s2 = Arc::clone(&s);
@@ -363,6 +372,26 @@ mod tests {
             state.status.lock().unwrap().model.as_deref(),
             Some("voxtral-mini")
         );
+    }
+
+    #[tokio::test]
+    async fn transcribe_empty_audio_is_invalid() {
+        // Ready state, but empty audio_data → 400 invalid_audio (contract), before
+        // the engine is ever touched (so no model needed to exercise it).
+        let state = test_state();
+        state.status.lock().unwrap().state = LoadState::Ready;
+        let body = serde_json::to_vec(&json!({ "audio_data": [], "sample_rate": 16000 })).unwrap();
+        let resp = router(state)
+            .oneshot(
+                Request::post("/v1/transcribe")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["message"], "invalid_audio");
     }
 
     #[tokio::test]
