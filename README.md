@@ -17,6 +17,16 @@ registry, downloads a prebuilt release for your platform, fetches the model
 weights, and runs it sandboxed. To use Voxtral, install Super STT and enable it
 from the app — see the [Super STT docs](https://github.com/jorge-menjivar/super-stt).
 
+## Models
+
+Two models, chosen by `name` when Super STT loads the backend. Both require a
+CUDA GPU; weights are pulled from Hugging Face on first load.
+
+| Model (`name`)  | Upstream model                                                              | Device | ~VRAM  |
+| --------------- | -------------------------------------------------------------------------- | ------ | ------ |
+| `voxtral-mini`  | [Voxtral Mini 3B](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)   | CUDA   | ~8 GB  |
+| `voxtral-small` | [Voxtral Small 24B](https://huggingface.co/mistralai/Voxtral-Small-24B-2507) | CUDA   | ~52 GB |
+
 ## What's in here
 
 A small, self-contained Rust program that loads a Voxtral model and speaks the
