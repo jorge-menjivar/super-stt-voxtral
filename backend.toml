@@ -118,17 +118,12 @@
     estimated_vram_bytes = 8589934592
     processing_interval_ms = 2000
 
-    [[models.files]]
-        source = "huggingface"
-        repo = "mistralai/Voxtral-Mini-3B-2507"
-        revision = "main"
-        files = [
-            "config.json",
-            "tekken.json",
-            "model-00001-of-00002.safetensors",
-            "model-00002-of-00002.safetensors",
-        ]
-        dest = "models/voxtral-mini"
+    files = [
+        { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/config.json", destination = "models/voxtral-mini/config.json" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/tekken.json", destination = "models/voxtral-mini/tekken.json" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/model-00001-of-00002.safetensors", destination = "models/voxtral-mini/model-00001-of-00002.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/model-00002-of-00002.safetensors", destination = "models/voxtral-mini/model-00002-of-00002.safetensors" },
+    ]
 
 [[models]]
     name = "voxtral-small"
@@ -144,23 +139,18 @@
     # `consolidated.safetensors`, which is deliberately omitted: the backend
     # mmaps every `*.safetensors` in the dir, so pulling both would duplicate
     # the ~48 GB of weights.
-    [[models.files]]
-        source = "huggingface"
-        repo = "mistralai/Voxtral-Small-24B-2507"
-        revision = "main"
-        files = [
-            "config.json",
-            "tekken.json",
-            "model-00001-of-00011.safetensors",
-            "model-00002-of-00011.safetensors",
-            "model-00003-of-00011.safetensors",
-            "model-00004-of-00011.safetensors",
-            "model-00005-of-00011.safetensors",
-            "model-00006-of-00011.safetensors",
-            "model-00007-of-00011.safetensors",
-            "model-00008-of-00011.safetensors",
-            "model-00009-of-00011.safetensors",
-            "model-00010-of-00011.safetensors",
-            "model-00011-of-00011.safetensors",
-        ]
-        dest = "models/voxtral-small"
+    files = [
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/config.json", destination = "models/voxtral-small/config.json" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/tekken.json", destination = "models/voxtral-small/tekken.json" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00001-of-00011.safetensors", destination = "models/voxtral-small/model-00001-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00002-of-00011.safetensors", destination = "models/voxtral-small/model-00002-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00003-of-00011.safetensors", destination = "models/voxtral-small/model-00003-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00004-of-00011.safetensors", destination = "models/voxtral-small/model-00004-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00005-of-00011.safetensors", destination = "models/voxtral-small/model-00005-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00006-of-00011.safetensors", destination = "models/voxtral-small/model-00006-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00007-of-00011.safetensors", destination = "models/voxtral-small/model-00007-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00008-of-00011.safetensors", destination = "models/voxtral-small/model-00008-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00009-of-00011.safetensors", destination = "models/voxtral-small/model-00009-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00010-of-00011.safetensors", destination = "models/voxtral-small/model-00010-of-00011.safetensors" },
+        { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/model-00011-of-00011.safetensors", destination = "models/voxtral-small/model-00011-of-00011.safetensors" },
+    ]
