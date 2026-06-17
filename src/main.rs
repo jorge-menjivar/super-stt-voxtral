@@ -26,6 +26,11 @@ use tokio::net::UnixListener;
 
 use inference::VoxtralEngine;
 
+/// This backend implements exactly one provider (the model routing class every
+/// one of its models declares). A `/v1/load` naming any other provider is
+/// `400 invalid_model` per the Super STT backend contract.
+const PROVIDER: &str = "local_voxtral";
+
 #[derive(Clone, Copy)]
 enum LoadState {
     Starting,
@@ -131,7 +136,9 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     let st = s.status.lock().unwrap();
     let mut out = json!({ "status": "success", "state": st.state.as_str() });
     if let Some(m) = &st.model {
-        out["model"] = json!({ "name": m });
+        // The contract's model identity is (name, provider); this backend's
+        // provider is fixed, so report it alongside the name.
+        out["model"] = json!({ "name": m, "provider": PROVIDER });
     }
     if let Some(d) = &st.device {
         out["device"] = json!(d);
@@ -146,12 +153,33 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 struct LoadReq {
     name: String,
     #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
     device: Option<String>,
 }
 
 async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
+    // Contract: an unimplemented (name, provider) is a client error. This
+    // backend serves only PROVIDER, so a mismatched provider is `invalid_model`.
+    if let Some(provider) = &req.provider
+        && provider != PROVIDER
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "error", "message": "invalid_model" })),
+        );
+    }
     {
         let mut st = s.status.lock().unwrap();
+        // Contract: reject a concurrent load. A model switch is a fresh load
+        // after the daemon tears this backend down, so only an in-flight load on
+        // this instance trips `already_loading`.
+        if matches!(st.state, LoadState::Loading) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "status": "error", "message": "already_loading" })),
+            );
+        }
         st.state = LoadState::Loading;
         st.model = Some(req.name.clone());
         st.device = None;
@@ -239,10 +267,12 @@ async fn transcribe(
                 json!({ "status": "error", "message": "inference_failed", "detail": format!("{e:#}") }),
             ),
         ),
+        // A task panic is still an inference failure; the contract documents
+        // `inference_failed` for 500, so report that (the panic is in `detail`).
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(
-                json!({ "status": "error", "message": "inference_panicked", "detail": format!("{e}") }),
+                json!({ "status": "error", "message": "inference_failed", "detail": format!("panicked: {e}") }),
             ),
         ),
     }
@@ -348,8 +378,44 @@ mod tests {
         let v = json_body(resp).await;
         assert_eq!(v["state"], "ready");
         assert_eq!(v["model"]["name"], "voxtral-mini");
+        assert_eq!(v["model"]["provider"], "local_voxtral");
         assert_eq!(v["device"], "cuda");
         assert_eq!(v["reason"], "recovered");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_mismatched_provider() {
+        let body =
+            serde_json::to_vec(&json!({ "name": "voxtral-mini", "provider": "openai" })).unwrap();
+        let resp = router(test_state())
+            .oneshot(
+                Request::post("/v1/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["message"], "invalid_model");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_concurrent_load() {
+        let state = test_state();
+        state.status.lock().unwrap().state = LoadState::Loading;
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini" })).unwrap();
+        let resp = router(state)
+            .oneshot(
+                Request::post("/v1/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(resp).await["message"], "already_loading");
     }
 
     #[tokio::test]
