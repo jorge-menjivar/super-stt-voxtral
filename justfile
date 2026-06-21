@@ -37,14 +37,16 @@ fmt-check:
 test *args:
     cargo test --locked {{ args }}
 
-# Measure code coverage (requires cargo-llvm-cov). Usage: just coverage [--html]
+# Measure code coverage (requires cargo-llvm-cov). --remap-path-prefix keeps the
+# report paths relative (src/...), and tests/ is excluded so only product code
+# is counted. Usage: just coverage [--html]
 coverage *args:
-    cargo llvm-cov --locked {{ args }}
+    cargo llvm-cov --locked --remap-path-prefix --ignore-filename-regex 'tests/' {{ args }}
 
-# Coverage for CI: write lcov.info and print a summary
+# Coverage for CI: write lcov.info and print a summary.
 coverage-lcov:
-    cargo llvm-cov --locked --lcov --output-path lcov.info
-    cargo llvm-cov report --summary-only
+    cargo llvm-cov --locked --remap-path-prefix --ignore-filename-regex 'tests/' --lcov --output-path lcov.info
+    cargo llvm-cov report --summary-only --ignore-filename-regex 'tests/'
 
 # Full local CI gate: format, lint, build, test
 # (no doctests — this is a binary-only crate, so `cargo test --doc` has no lib target)
