@@ -113,7 +113,7 @@
     provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
-    supported_languages = ["en"]
+    supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["cuda"]
     estimated_vram_bytes = 8589934592
     processing_interval_ms = 2000
@@ -130,7 +130,7 @@
     provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
-    supported_languages = ["en"]
+    supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["cuda"]
     estimated_vram_bytes = 55834574848
     processing_interval_ms = 2000

@@ -76,10 +76,24 @@ impl VoxtralEngine {
     }
 
     /// Transcribe 16 kHz mono f32 audio. (The daemon resamples upstream.)
-    pub fn transcribe(&mut self, audio_data: &[f32], sample_rate: u32) -> Result<String> {
+    pub fn transcribe(
+        &mut self,
+        audio_data: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<String> {
         if sample_rate != SAMPLE_RATE {
             warn!("Voxtral expects {SAMPLE_RATE}Hz; got {sample_rate}Hz (daemon should resample)");
         }
+
+        // Voxtral conditions on a `lang:<code>` prompt token and has no
+        // auto-detect mode, so the reserved `auto` (and an omitted language)
+        // fall back to the model's primary (English). The daemon only sends
+        // codes the model supports.
+        let lang_code = match language {
+            Some("auto") | None => "en",
+            Some(code) => code,
+        };
 
         let padded_audio = pad_to_chunk(audio_data, CHUNK_SAMPLES);
 
@@ -92,6 +106,7 @@ impl VoxtralEngine {
             self.audio_token_id,
             &self.device,
             &self.cache.clone(),
+            lang_code,
         )?;
         Ok(result)
     }
@@ -194,6 +209,7 @@ fn transcribe_with_voxtral(
     audio_token_id: usize,
     device: &Device,
     cache: &VoxtralCache,
+    lang_code: &str,
 ) -> Result<(String, Vec<u32>)> {
     let audio_dims = audio_features.dims();
     anyhow::ensure!(
@@ -206,7 +222,7 @@ fn transcribe_with_voxtral(
         audio_dims[1]
     );
 
-    // <s>[INST][BEGIN_AUDIO][AUDIO]*N[/INST]lang:en[TRANSCRIBE]
+    // <s>[INST][BEGIN_AUDIO][AUDIO]*N[/INST]lang:<code>[TRANSCRIBE]
     let mut input_tokens = vec![1u32, 3u32, 25u32];
     let batch_size = audio_features.dim(0)?;
     let tokens_per_chunk = 375;
@@ -215,7 +231,14 @@ fn transcribe_with_voxtral(
         #[allow(clippy::cast_possible_truncation)]
         input_tokens.push(audio_token_id as u32);
     }
-    input_tokens.extend_from_slice(&[4u32, 9909u32, 1058u32, 1262u32, 34u32]);
+    // [/INST] then the `lang:<code>` hint (tokenized — `lang:en` reproduces the
+    // model's original [9909, 1058, 1262]) then [TRANSCRIBE].
+    input_tokens.push(4u32);
+    let lang_tokens = tokenizer
+        .encode(&format!("lang:{lang_code}"), false, false)
+        .map_err(|e| anyhow::anyhow!("encode lang prompt: {e}"))?;
+    input_tokens.extend_from_slice(&lang_tokens);
+    input_tokens.push(34u32);
 
     let input_len = input_tokens.len();
     let input_ids = Tensor::new(input_tokens, device)?.unsqueeze(0)?;
@@ -370,6 +393,29 @@ mod tests {
         assert_eq!(
             post_process_transcription("  hello   world  ").unwrap(),
             "hello world"
+        );
+    }
+
+    /// Guards the `lang:<code>` prompt tokenization: `lang:en` must reproduce the
+    /// model's original hardcoded ids `[9909, 1058, 1262]`, or the transcription
+    /// prompt would silently break on a tokenizer change. Tokenizer-only (no
+    /// model/GPU); self-skips unless a `tekken.json` is provisioned via
+    /// `SUPER_STT_TEST_TEKKEN` or `SUPER_STT_BACKEND_DIR`.
+    #[test]
+    fn lang_prompt_encoding_is_stable() {
+        let path = std::env::var("SUPER_STT_TEST_TEKKEN").ok().or_else(|| {
+            std::env::var("SUPER_STT_BACKEND_DIR")
+                .ok()
+                .map(|d| format!("{d}/models/voxtral-mini/tekken.json"))
+        });
+        let Some(path) = path.filter(|p| std::path::Path::new(p).exists()) else {
+            return; // no tokenizer provisioned
+        };
+        let t = Tekkenizer::from_file(&path).expect("load tekken.json");
+        assert_eq!(
+            t.encode("lang:en", false, false).expect("encode lang:en"),
+            vec![9909, 1058, 1262],
+            "lang:en tokenization changed — the Voxtral prompt would break",
         );
     }
 

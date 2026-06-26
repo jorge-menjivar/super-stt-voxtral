@@ -223,6 +223,8 @@ struct TranscribeReq {
     audio_data: Vec<f32>,
     #[serde(default)]
     sample_rate: Option<u32>,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 async fn transcribe(
@@ -247,13 +249,14 @@ async fn transcribe(
     }
     let sample_rate = req.sample_rate.unwrap_or(16000);
     let audio = req.audio_data;
+    let language = req.language;
     let s2 = Arc::clone(&s);
     let result = tokio::task::spawn_blocking(move || {
         let mut guard = s2.engine.lock().unwrap();
         let engine = guard
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("engine not loaded"))?;
-        engine.transcribe(&audio, sample_rate)
+        engine.transcribe(&audio, sample_rate, language.as_deref())
     })
     .await;
     match result {
