@@ -10,6 +10,7 @@
     entrypoint = "super-stt-backend-voxtral"
     contract = "v1"
     license = "GPL-3.0-only"
+    description = "Local Voxtral speech-to-text."
 
 [network]
     allowed_hosts = []
