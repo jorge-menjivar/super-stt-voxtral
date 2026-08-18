@@ -77,7 +77,7 @@ impl Backend {
             .uri(path)
             .header("host", "backend.local")
             .header("content-type", "application/json")
-            .header("x-stt-model", "voxtral-mini")
+            .header("x-stt-model", "voxtral-mini-3b-2507")
             .body(Full::new(Bytes::from(body)))
             .unwrap();
         let resp = sender

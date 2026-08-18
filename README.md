@@ -22,10 +22,10 @@ from the app — see the [Super STT docs](https://github.com/jorge-menjivar/supe
 Two models, chosen by `name` when Super STT loads the backend. Both require a
 CUDA GPU; weights are pulled from Hugging Face on first load.
 
-| Model (`name`)  | Upstream model                                                              | Device | ~VRAM  |
-| --------------- | -------------------------------------------------------------------------- | ------ | ------ |
-| `voxtral-mini`  | [Voxtral Mini 3B](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)   | CUDA   | ~8 GB  |
-| `voxtral-small` | [Voxtral Small 24B](https://huggingface.co/mistralai/Voxtral-Small-24B-2507) | CUDA   | ~52 GB |
+| Model (`name`)           | Upstream model                                                               | Device | ~VRAM  |
+| ------------------------ | ---------------------------------------------------------------------------- | ------ | ------ |
+| `voxtral-mini-3b-2507`   | [Voxtral Mini 3B](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)     | CUDA   | ~8 GB  |
+| `voxtral-small-24b-2507` | [Voxtral Small 24B](https://huggingface.co/mistralai/Voxtral-Small-24B-2507) | CUDA   | ~52 GB |
 
 ## What's in here
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Gated real-model E2E (GPU). Provision `models/voxtral-mini` under
+//! Gated real-model E2E (GPU). Provision `models/voxtral-mini-3b-2507` under
 //! SUPER_STT_BACKEND_DIR, then run with `--features cuda`:
 //!   SUPER_STT_TEST_VOXTRAL=1 SUPER_STT_BACKEND_DIR=<dir> \
 //!   SUPER_STT_TEST_AUDIO=<wav> cargo test --features cuda --test transcribe_e2e -- --nocapture
@@ -34,16 +34,16 @@ async fn transcribe_real_model() {
     }
     let backend_dir = PathBuf::from(
         std::env::var("SUPER_STT_BACKEND_DIR")
-            .expect("SUPER_STT_BACKEND_DIR (must contain models/voxtral-mini)"),
+            .expect("SUPER_STT_BACKEND_DIR (must contain models/voxtral-mini-3b-2507)"),
     );
     assert!(
-        backend_dir.join("models/voxtral-mini").exists(),
-        "provision models/voxtral-mini under SUPER_STT_BACKEND_DIR first"
+        backend_dir.join("models/voxtral-mini-3b-2507").exists(),
+        "provision models/voxtral-mini-3b-2507 under SUPER_STT_BACKEND_DIR first"
     );
     let audio_path = std::env::var("SUPER_STT_TEST_AUDIO").expect("SUPER_STT_TEST_AUDIO");
 
     let backend = Backend::spawn(&backend_dir).await;
-    assert_eq!(backend.load("voxtral-mini", "").await, 202);
+    assert_eq!(backend.load("voxtral-mini-3b-2507", "").await, 202);
     backend
         .wait_for_state(&["ready"], Duration::from_mins(10))
         .await;
