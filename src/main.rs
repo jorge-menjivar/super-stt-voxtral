@@ -370,7 +370,7 @@ mod tests {
         {
             let mut st = state.status.lock().unwrap();
             st.state = LoadState::Ready;
-            st.model = Some("voxtral-mini".to_string());
+            st.model = Some("voxtral-mini-3b-2507".to_string());
             st.device = Some("cuda".to_string());
             st.reason = Some("recovered".to_string());
         }
@@ -380,7 +380,7 @@ mod tests {
             .unwrap();
         let v = json_body(resp).await;
         assert_eq!(v["state"], "ready");
-        assert_eq!(v["model"]["name"], "voxtral-mini");
+        assert_eq!(v["model"]["name"], "voxtral-mini-3b-2507");
         assert_eq!(v["model"]["provider"], "local_voxtral");
         assert_eq!(v["device"], "cuda");
         assert_eq!(v["reason"], "recovered");
@@ -389,7 +389,8 @@ mod tests {
     #[tokio::test]
     async fn load_rejects_mismatched_provider() {
         let body =
-            serde_json::to_vec(&json!({ "name": "voxtral-mini", "provider": "openai" })).unwrap();
+            serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "provider": "openai" }))
+                .unwrap();
         let resp = router(test_state())
             .oneshot(
                 Request::post("/v1/load")
@@ -407,7 +408,7 @@ mod tests {
     async fn load_rejects_concurrent_load() {
         let state = test_state();
         state.status.lock().unwrap().state = LoadState::Loading;
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini" })).unwrap();
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507" })).unwrap();
         let resp = router(state)
             .oneshot(
                 Request::post("/v1/load")
@@ -426,7 +427,8 @@ mod tests {
         // The handler sets the model name before spawning the load task, and the
         // error path leaves it intact — so it's readable right after the 202.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini", "device": "cpu" })).unwrap();
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+            .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(
                 Request::post("/v1/load")
@@ -439,7 +441,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         assert_eq!(
             state.status.lock().unwrap().model.as_deref(),
-            Some("voxtral-mini")
+            Some("voxtral-mini-3b-2507")
         );
     }
 
@@ -467,7 +469,8 @@ mod tests {
     async fn load_missing_weights_transitions_to_error() {
         // backend_dir is a temp dir with no models/, so the load fails fast.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini", "device": "cpu" })).unwrap();
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+            .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(
                 Request::post("/v1/load")

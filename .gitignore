@@ -1,5 +1,10 @@
 /target
 
+# Build artifact staged by `just stage` under the entrypoint name `backend.toml`
+# declares. A local, installable copy of the binary — never committed; the
+# release workflow builds its own from source.
+/super-stt-backend-voxtral
+
 # Coverage artifacts (cargo-llvm-cov). `just coverage-lcov` writes lcov.info to
 # the repo root; the HTML report lives under target/. Profiles can land in CWD.
 /lcov.info

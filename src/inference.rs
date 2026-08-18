@@ -406,7 +406,7 @@ mod tests {
         let path = std::env::var("SUPER_STT_TEST_TEKKEN").ok().or_else(|| {
             std::env::var("SUPER_STT_BACKEND_DIR")
                 .ok()
-                .map(|d| format!("{d}/models/voxtral-mini/tekken.json"))
+                .map(|d| format!("{d}/models/voxtral-mini-3b-2507/tekken.json"))
         });
         let Some(path) = path.filter(|p| std::path::Path::new(p).exists()) else {
             return; // no tokenizer provisioned

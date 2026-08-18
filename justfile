@@ -13,6 +13,15 @@ build-debug *args:
 build-release *args:
     cargo build --release --locked {{ args }}
 
+# Build, then copy the binary to the entrypoint name `backend.toml` declares, so
+# this directory can be installed with the daemon's Import-from-dir path. Cargo
+# already names the artifact that, and the release workflow tarballs it under the
+# same name, so a local install and a published one stage the same bytes under
+# the same name. Usage: just stage [--features cuda]
+stage *args: (build-release args)
+    cp target/release/super-stt-backend-voxtral super-stt-backend-voxtral
+    @echo "staged super-stt-backend-voxtral — this directory is now installable with Import from dir"
+
 # Runs a clippy check — mirrors super-stt's lint. There, `--all-features
 # --workspace` enables no CUDA (workspace crates have no cuda feature; the GPU
 # backends are out-of-tree), so the equivalent here is a default-feature (CPU)

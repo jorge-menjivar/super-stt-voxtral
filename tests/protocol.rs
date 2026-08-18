@@ -29,7 +29,7 @@ async fn load_without_weights_reports_error() {
     let dir = tempfile::tempdir().unwrap(); // no models/ subdir
     let backend = Backend::spawn(dir.path()).await;
 
-    assert_eq!(backend.load("voxtral-mini", "cpu").await, 202);
+    assert_eq!(backend.load("voxtral-mini-3b-2507", "cpu").await, 202);
 
     // Weights dir is missing → the engine load fails → state becomes `error`.
     let s = backend

@@ -12,12 +12,12 @@
 # Own workspace root — never absorbed into a parent workspace.
 [workspace]
 
-# cross (cross-rs): forward CUDA_COMPUTE_CAP into the build container so candle's
-# kernels compile for the requested compute capability — `nvidia-smi` isn't
-# available inside `docker build`, so without this candle-kernels fails to detect
-# the cap. The release workflow sets CUDA_COMPUTE_CAP per matrix entry.
-[workspace.metadata.cross.build.env]
-    passthrough = ["CUDA_COMPUTE_CAP"]
+    # cross (cross-rs): forward CUDA_COMPUTE_CAP into the build container so candle's
+    # kernels compile for the requested compute capability — `nvidia-smi` isn't
+    # available inside `docker build`, so without this candle-kernels fails to detect
+    # the cap. The release workflow sets CUDA_COMPUTE_CAP per matrix entry.
+    [workspace.metadata.cross.build.env]
+        passthrough = ["CUDA_COMPUTE_CAP"]
 
 [dependencies]
     anyhow = "1"
@@ -27,15 +27,15 @@
     # candle_transformers Voxtral API matches.
     candle-core = {
         git = "https://github.com/huggingface/candle.git",
-        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+        rev = "2a13b0f3ff62f7e67013597f2996f764c5735e21"
     }
     candle-nn = {
         git = "https://github.com/huggingface/candle.git",
-        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+        rev = "2a13b0f3ff62f7e67013597f2996f764c5735e21"
     }
     candle-transformers = {
         git = "https://github.com/huggingface/candle.git",
-        rev = "bf9e950cd300493b8768d77baec1a23ad6d44d94"
+        rev = "2a13b0f3ff62f7e67013597f2996f764c5735e21"
     }
     env_logger = "0.11"
     hyper = { version = "1", features = ["http1", "server"] }
