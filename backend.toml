@@ -5,7 +5,7 @@
 [backend]
     source = "github.com/jorge-menjivar/super-stt-voxtral"
     name = "Voxtral"
-    version = "0.1.0"
+    version = "0.1.1"
     kind = "subprocess"
     entrypoint = "super-stt-backend-voxtral"
     contract = "v1"
