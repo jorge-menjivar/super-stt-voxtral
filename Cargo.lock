@@ -2120,7 +2120,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "tekken-rs",
+ "tekken",
  "tempfile",
  "tokio",
  "tower",
@@ -2180,10 +2180,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tekken-rs"
-version = "0.1.2"
+name = "tekken"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0370459b347364f95683575afc18fe0aa6fc32a082de65fca5a229ce098be"
+checksum = "1d1481e6bbb98c7e1b04124420b6e7c367c87fc897aae340edcdeb4e91b639d2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
