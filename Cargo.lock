@@ -292,7 +292,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "byteorder",
  "candle-kernels",
@@ -320,7 +320,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -331,7 +331,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "cudaforge",
 ]
@@ -339,7 +339,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "candle-core",
  "half",
@@ -354,7 +354,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -373,7 +373,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.11.0"
-source = "git+https://github.com/huggingface/candle.git?rev=2a13b0f3ff62f7e67013597f2996f764c5735e21#2a13b0f3ff62f7e67013597f2996f764c5735e21"
+source = "git+https://github.com/jorge-menjivar/candle.git?rev=eef47d5df512eefcba05a4eb7f3716ea2088287b#eef47d5df512eefcba05a4eb7f3716ea2088287b"
 dependencies = [
  "ug",
  "ug-cuda",
