@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//! Voxtral, Mistral's speech-understanding model, ported to Burn.
+//!
+//! The architecture is three pieces, each a module here:
+//!
+//! - [`encoder`]: the audio tower, a Whisper-style encoder — two convolutions
+//!   over a 128-bin log-mel spectrogram, learnt positions, 32 pre-norm
+//!   transformer layers — and the projector that folds four encoder frames into
+//!   one text-sized embedding;
+//! - [`transformer`]: the text decoder, a Llama/Mistral stack (RMS norm, rotary
+//!   positions, grouped-query attention, SwiGLU);
+//! - [`model`]: the two joined — the projected audio replaces the `[AUDIO]`
+//!   placeholders of the prompt — and greedy decoding over the result.
+//!
+//! [`audio`] turns 16 kHz samples into the spectrogram the encoder reads.
+//!
+//! # Provenance
+//!
+//! Ported from `candle_transformers::models::voxtral` at
+//! `jorge-menjivar/candle@eef47d5`, which this backend ran on before, and
+//! checked against it layer by layer (see `parity`, and `parity/` at the root
+//! of the repository for the candle side). The decoder stack and the
+//! checkpoint adapter below
+//! are adapted from the `qwen3-tts` example of `jorge-menjivar/burn` at
+//! `1e9de733d` — the revision `Cargo.toml` pins — with what Qwen3 has and Llama
+//! does not (per-head query/key norms, layer scales, sliding windows) taken
+//! out.
+
+pub mod audio;
+pub mod config;
+pub mod encoder;
+pub mod model;
+#[cfg(test)]
+mod parity;
+pub mod transformer;
+
+use burn::nn::{LinearConfig, LinearLayout};
+use burn_store::burn_pack::Tensor as PackTensor;
+use burn_store::{ApplyResult, ModuleAdapter, ModuleContext};
+
+/// The configuration of every linear layer here: the weight keeps the
+/// column-major, `[d_output, d_input]` layout of the checkpoints.
+///
+/// That is not only about loading without a transpose. Decoding a token runs
+/// every linear layer of the decoder on a single row, and the matmul kernels
+/// for that product are very sensitive to the layout of the matrix: the Burn
+/// port of Qwen3-TTS measured ~55 µs with a row-major weight against ~12 µs,
+/// the memory-bandwidth limit, with a column-major one on an RTX 3090.
+pub(crate) fn linear_config(d_input: usize, d_output: usize) -> LinearConfig {
+    LinearConfig::new(d_input, d_output).with_layout(LinearLayout::Col)
+}
+
+/// Loads the PyTorch checkpoints into modules built with [`linear_config`].
+///
+/// Renames the parameters of the normalization layers — `weight` and `bias` in
+/// PyTorch, `gamma` and `beta` in Burn — and leaves the linear weights alone: a
+/// column-major linear layer stores its weight as `[d_output, d_input]`, which
+/// is exactly the PyTorch layout, so there is nothing to transpose.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CheckpointAdapter;
+
+impl CheckpointAdapter {
+    fn is_normalization_layer(module_type: &str) -> bool {
+        matches!(
+            module_type,
+            "Struct:BatchNorm" | "Struct:LayerNorm" | "Struct:GroupNorm" | "Struct:RmsNorm"
+        )
+    }
+}
+
+impl ModuleAdapter for CheckpointAdapter {
+    fn adapt(&self, mut tensor: PackTensor, ctx: ModuleContext<'_>) -> PackTensor {
+        let Some(module_type) = ctx.module_type() else {
+            return tensor;
+        };
+        if !Self::is_normalization_layer(module_type) {
+            return tensor;
+        }
+        let start = tensor.name.rfind('.').map_or(0, |dot| dot + 1);
+        let renamed = match &tensor.name[start..] {
+            "weight" => "gamma",
+            "bias" => "beta",
+            _ => return tensor,
+        };
+        tensor.name.truncate(start);
+        tensor.name.push_str(renamed);
+        tensor
+    }
+
+    /// The store looks the parameters up under their Burn names, which the
+    /// checkpoint does not use for the normalization layers.
+    fn get_alternative_param_name(&self, param_name: &str, module_type: &str) -> Option<String> {
+        if !Self::is_normalization_layer(module_type) {
+            return None;
+        }
+        match param_name {
+            "gamma" => Some("weight".to_string()),
+            "beta" => Some("bias".to_string()),
+            _ => None,
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn ModuleAdapter> {
+        Box::new(self.clone())
+    }
+}
+
+/// Folds the outcome of loading every shard of a checkpoint into one verdict.
+///
+/// A sharded checkpoint is loaded one file at a time, each allowed to be
+/// partial, so a parameter one shard does not carry is reported missing by
+/// that shard even when another fills it. What is really missing is what
+/// *every* shard reported missing. Tensors no parameter claims are an error
+/// too: a checkpoint carrying weights this port never reads is one it does not
+/// implement, and running it anyway would be quietly wrong.
+pub(crate) fn check_shards(results: &[ApplyResult]) -> Result<(), String> {
+    let errors: Vec<String> = results
+        .iter()
+        .flat_map(|r| r.errors.iter().map(ToString::to_string))
+        .collect();
+    if !errors.is_empty() {
+        return Err(errors.join(", "));
+    }
+    let Some((first, rest)) = results.split_first() else {
+        return Err("the checkpoint has no shards".to_string());
+    };
+    let missing: Vec<&str> = first
+        .missing
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .filter(|path| {
+            rest.iter()
+                .all(|r| r.missing.iter().any(|(p, _)| p == path))
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} parameters were not found in any shard, e.g. {:?}",
+            missing.len(),
+            &missing[..missing.len().min(5)]
+        ));
+    }
+    let unused: Vec<&str> = results
+        .iter()
+        .flat_map(|r| r.unused.iter().map(String::as_str))
+        .collect();
+    if !unused.is_empty() {
+        return Err(format!(
+            "{} tensors of the checkpoint belong to no parameter, e.g. {:?}",
+            unused.len(),
+            &unused[..unused.len().min(5)]
+        ));
+    }
+    Ok(())
+}

@@ -1,4 +1,6 @@
 /target
+# The candle reference `just parity` builds has its own workspace.
+/parity/target
 
 # Build artifact staged by `just stage` under the entrypoint name `backend.toml`
 # declares. A local, installable copy of the binary — never committed; the

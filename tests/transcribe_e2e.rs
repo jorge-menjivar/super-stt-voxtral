@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Gated real-model E2E (GPU). Provision `models/voxtral-mini-3b-2507` under
-//! SUPER_STT_BACKEND_DIR, then run with `--features cuda`:
+//! SUPER_STT_BACKEND_DIR, then run with a GPU build:
 //!   SUPER_STT_TEST_VOXTRAL=1 SUPER_STT_BACKEND_DIR=<dir> \
-//!   SUPER_STT_TEST_AUDIO=<wav> cargo test --features cuda --test transcribe_e2e -- --nocapture
+//!   SUPER_STT_TEST_AUDIO=<wav> cargo test --release --no-default-features --features cuda \
+//!     --test transcribe_e2e -- --nocapture
 
 #![allow(clippy::doc_markdown)] // env var names in shell-command doc comment
 

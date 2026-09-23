@@ -1,78 +1,264 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Self-contained Voxtral inference on candle + tekken. No super-stt deps.
-//!
-//! Ported from the daemon's `stt_models/local/voxtral/model.rs` with the
-//! super-stt wrappers (ModelInfoData, registry, the Transcribe trait, the
-//! resample helper) removed: the architecture lives in
-//! `candle_transformers::models::voxtral`, and the daemon resamples audio to
-//! 16 kHz before sending, so this engine just loads files and decodes.
+//! The engine the `/v1` handlers drive: which device to run on, where the
+//! files are, how a request becomes a prompt, and how the tokens that come
+//! back become a transcript. The model itself is in [`crate::voxtral`].
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Error, Result};
-use byteorder::{LittleEndian, ReadBytesExt};
-use candle_core::{DType, Device, Tensor, utils};
-use candle_nn::VarBuilder;
-use candle_transformers::models::voxtral::{
-    VoxtralCache, VoxtralConfig, VoxtralEncoderConfig, VoxtralForConditionalGeneration,
-    VoxtralGenerationConfig, VoxtralLlamaConfig, audio,
-};
+use burn::prelude::Device;
+use burn::tensor::DType;
 use log::{info, warn};
 use tekken::Tekkenizer;
 
-const SAMPLE_RATE: u32 = 16000;
-// VoxtralProcessor pads audio to a multiple of 480000 samples (30 s @ 16 kHz).
-const CHUNK_SAMPLES: usize = 480_000;
-const MEL_FILTERS: &[u8] = include_bytes!("data/melfilters128.bytes");
+use crate::voxtral::audio::{self, CHUNK_SAMPLES, SAMPLE_RATE};
+use crate::voxtral::config::VoxtralConfig;
+use crate::voxtral::model::{Taps, Voxtral};
+
+/// Longest transcript, in tokens: the cap candle's backend decoded to. It
+/// also sizes the key/value caches, see [`Voxtral::generate`].
+pub const MAX_NEW_TOKENS: usize = 1000;
+
+/// What the warm-up feeds the decoder, see [`VoxtralEngine::warm_up`]. Any
+/// tokens do: only the shapes they run at matter. Three, so the steady state
+/// after the first step's compile is reached too.
+const WARM_UP_TOKENS: [u32; 3] = [0; 3];
+
+/// `<s>`, `[INST]` and `[BEGIN_AUDIO]`, which open the prompt.
+const PROMPT_OPEN: [u32; 3] = [1, 3, 25];
+/// `[/INST]`, which closes the audio.
+const INST_CLOSE: u32 = 4;
+/// `[TRANSCRIBE]`, which asks for a transcript rather than an answer.
+const TRANSCRIBE: u32 = 34;
+
+/// The accelerator this build was compiled for, as the manifest names it.
+///
+/// One build serves one accelerator: Burn's backends are cargo features, and
+/// the asset that carries this binary declares the matching `accel`.
+const BUILT_FOR: &str = if cfg!(feature = "cuda") {
+    "cuda"
+} else if cfg!(feature = "rocm") {
+    "rocm"
+} else if cfg!(feature = "vulkan") {
+    "vulkan"
+} else if cfg!(feature = "metal") {
+    "metal"
+} else if cfg!(feature = "wgpu") {
+    "wgpu"
+} else {
+    "cpu"
+};
+
+/// Whether [`BUILT_FOR`] is a GPU, which decides the dtype.
+const ON_GPU: bool = cfg!(any(
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan",
+    feature = "metal",
+    feature = "wgpu"
+));
+
+/// The device this build runs on, and the name `GET /v1/status` reports.
+///
+/// The daemon sends the accelerator it resolved for the installed asset, or
+/// nothing. A build has exactly one backend compiled in, so the request is a
+/// cross-check rather than a choice, and a mismatch is worth a line in the log
+/// because it means the wrong asset was installed for the host.
+pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
+    if let Some(d) = requested.map(str::trim).filter(|s| !s.is_empty())
+        && !d.eq_ignore_ascii_case(BUILT_FOR)
+    {
+        warn!("the daemon asked for {d:?} but this build only has {BUILT_FOR}; using {BUILT_FOR}");
+    }
+    // One arm per backend, in the order a build that somehow enabled several
+    // would prefer them: cargo features are additive, so the arms have to
+    // exclude each other by hand.
+    #[cfg(feature = "cuda")]
+    return (Device::cuda(0), "cuda");
+    #[cfg(all(not(feature = "cuda"), feature = "rocm"))]
+    return (Device::rocm(0), "rocm");
+    #[cfg(all(not(feature = "cuda"), not(feature = "rocm"), feature = "vulkan"))]
+    return (
+        Device::vulkan(burn::prelude::DeviceKind::DefaultDevice),
+        "vulkan",
+    );
+    #[cfg(all(
+        not(feature = "cuda"),
+        not(feature = "rocm"),
+        not(feature = "vulkan"),
+        feature = "metal"
+    ))]
+    return (
+        Device::metal(burn::prelude::DeviceKind::DefaultDevice),
+        "metal",
+    );
+    #[cfg(all(
+        not(feature = "cuda"),
+        not(feature = "rocm"),
+        not(feature = "vulkan"),
+        not(feature = "metal"),
+        feature = "wgpu"
+    ))]
+    return (
+        Device::wgpu(burn::prelude::DeviceKind::DefaultDevice),
+        "wgpu",
+    );
+    // Both CPU backends report `cpu`: they are one accelerator as far as the
+    // manifest and the daemon are concerned.
+    #[cfg(all(
+        not(feature = "cuda"),
+        not(feature = "rocm"),
+        not(feature = "vulkan"),
+        not(feature = "metal"),
+        not(feature = "wgpu"),
+        feature = "cpu"
+    ))]
+    return (Device::cpu(), "cpu");
+    #[cfg(all(
+        not(feature = "cuda"),
+        not(feature = "rocm"),
+        not(feature = "vulkan"),
+        not(feature = "metal"),
+        not(feature = "wgpu"),
+        not(feature = "cpu"),
+        feature = "flex"
+    ))]
+    return (Device::flex(), "cpu");
+    #[cfg(all(
+        not(feature = "cuda"),
+        not(feature = "rocm"),
+        not(feature = "vulkan"),
+        not(feature = "metal"),
+        not(feature = "wgpu"),
+        not(feature = "cpu"),
+        not(feature = "flex")
+    ))]
+    (Device::default(), "cpu")
+}
+
+/// The dtype the weights are cast to.
+///
+/// On a GPU, bf16 — the dtype the checkpoints ship in — when the device can
+/// compute in it, which halves the weights and their bandwidth. Not every
+/// device can: Vulkan often stores and converts bf16 without any arithmetic
+/// on it, and Burn computes garbage there rather than failing. f16 is the
+/// next choice; it is also what the candle backend ran in, and the parity
+/// test measures the two as equally faithful. On a CPU, f32: bf16 is slower
+/// there rather than faster.
+pub fn model_dtype(device: &Device) -> DType {
+    if !ON_GPU {
+        return DType::F32;
+    }
+    [DType::BF16, DType::F16]
+        .into_iter()
+        .find(|&dtype| device.supports_dtype(dtype))
+        .unwrap_or(DType::F32)
+}
+
+/// Configure CubeCL: where it keeps compiled kernels, and which stream the
+/// work runs on.
+///
+/// CubeCL compiles every kernel it meets at runtime and keeps them on disk so
+/// only the first run of a build pays. Left to itself it writes under
+/// `$HOME`, which the sandbox mounts read-only, so it would recompile on every
+/// load.
+///
+/// It also gives every thread a stream of its own, and every stream memory
+/// pools of its own. Transcriptions run on tokio's blocking pool, whose idle
+/// threads exit after ten seconds, so requests further apart than that each
+/// landed on a new thread, and so on new pools: 2.3 GB more per request,
+/// measured, until the card ran out. The engine runs one request at a time
+/// anyway, so one stream for everything costs nothing.
+///
+/// Must run before the first device is created: the configuration is frozen
+/// the first time anything reads it.
+pub fn configure_cubecl(cache_dir: Option<&Path>) {
+    use burn::cubecl::config::cache::CacheConfig;
+    use burn::cubecl::config::streaming::StreamPolicy;
+    use burn::cubecl::config::{CubeClRuntimeConfig, RuntimeConfig};
+
+    let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
+    config.compilation.cache = true;
+    if let Some(dir) = cache_dir {
+        config.environment.path = CacheConfig::Directory(dir.to_path_buf());
+    }
+    config.streaming.policy = StreamPolicy::Single;
+    // `false` means something already read the configuration and this call is
+    // too late to matter. Nothing touches a device before `main` calls this,
+    // so it is a guard rather than a case to handle.
+    if !CubeClRuntimeConfig::try_set(config) {
+        warn!("the CubeCL configuration was already read; it keeps its defaults");
+    }
+}
 
 /// A loaded Voxtral model ready to transcribe 16 kHz mono audio.
 pub struct VoxtralEngine {
-    model: VoxtralForConditionalGeneration,
+    model: Voxtral,
     tokenizer: Tekkenizer,
-    device: Device,
-    audio_token_id: usize,
-    cache: VoxtralCache,
     mel_filters: Vec<f32>,
+    device_name: &'static str,
 }
 
 impl VoxtralEngine {
-    /// Load the model from a directory containing `config.json`, `tekken.json`,
-    /// and the `*.safetensors` shards.
-    pub fn load(model_dir: &Path, force_cpu: bool) -> Result<Self> {
+    /// Load the model from a directory containing `config.json`, `tekken.json`
+    /// and the `*.safetensors` shards, then warm it up.
+    pub fn load(model_dir: &Path, device: Option<&str>) -> Result<Self> {
         let files = resolve_files(model_dir)?;
-
-        let device = if !force_cpu && utils::cuda_is_available() {
-            info!("Voxtral: using CUDA device");
-            Device::new_cuda(0).context("Failed to create CUDA device")?
-        } else {
-            info!("Voxtral: using CPU");
-            Device::Cpu
-        };
-
-        let config = load_model_config(&files.config)?;
-        let vb = load_model_weights(&files.weights, &device)?;
-        let model = VoxtralForConditionalGeneration::new(&config, vb)?;
+        let config = VoxtralConfig::from_json(&std::fs::read_to_string(&files.config)?)
+            .with_context(|| format!("parsing {}", files.config.display()))?;
+        let (device, device_name) = select_device(device);
+        let dtype = model_dtype(&device);
+        info!(
+            "loading Voxtral on {device_name} ({dtype:?}) from {}",
+            model_dir.display()
+        );
+        let started = std::time::Instant::now();
+        let model = Voxtral::load(&config, &files.weights, dtype, &device).map_err(Error::msg)?;
         let tokenizer = Tekkenizer::from_file(&files.tokenizer).map_err(Error::msg)?;
-        let cache = VoxtralCache::new(true, DType::F16, &config.text_config, &device)?;
-
-        let mel_filters = load_mel_filters()?;
-
-        let audio_token_id = config.audio_token_id;
-        info!("Voxtral model loaded on {device:?}");
-        Ok(Self {
+        info!("Voxtral mapped in {:.1?}", started.elapsed());
+        let mut engine = Self {
             model,
             tokenizer,
-            device,
-            audio_token_id,
-            cache,
-            mel_filters,
-        })
+            mel_filters: audio::mel_filters(),
+            device_name,
+        };
+        engine.warm_up();
+        Ok(engine)
     }
 
     /// Device label for `GET /v1/status`.
     pub fn device_label(&self) -> &'static str {
-        device_str(&self.device)
+        self.device_name
+    }
+
+    /// Compile and tune the kernels a transcription runs before the first
+    /// request needs them.
+    ///
+    /// CubeCL compiles kernels the first time it meets them and tunes each
+    /// operation against its candidates per shape, so without this the first
+    /// request of a load pays for all of it. A clip of silence walks the
+    /// encoder, the projector, the prefill and a few decoding steps at the
+    /// shapes a clip under 30 seconds — the daemon's usual request — uses.
+    ///
+    /// A failure is logged and swallowed: the model is loaded and usable, and
+    /// refusing the load over a warm-up would turn a slow first request into
+    /// no service at all.
+    fn warm_up(&mut self) {
+        let started = std::time::Instant::now();
+        let silence = vec![0.0; CHUNK_SAMPLES];
+        // Forced, since the model is right to answer silence with its
+        // end-of-sequence token and a run that stops at the prefill warms no
+        // decoding step.
+        let result = self.decode(&silence, "en", Some(&WARM_UP_TOKENS));
+        match result {
+            Ok(tokens) => info!(
+                "warmed up in {:.1?} ({} tokens)",
+                started.elapsed(),
+                tokens.len()
+            ),
+            Err(e) => warn!("the warm-up failed after {:.1?}: {e:#}", started.elapsed()),
+        }
+        self.model.release_scratch();
     }
 
     /// Transcribe 16 kHz mono f32 audio. (The daemon resamples upstream.)
@@ -85,7 +271,6 @@ impl VoxtralEngine {
         if sample_rate != SAMPLE_RATE {
             warn!("Voxtral expects {SAMPLE_RATE}Hz; got {sample_rate}Hz (daemon should resample)");
         }
-
         // Voxtral conditions on a `lang:<code>` prompt token and has no
         // auto-detect mode, so the reserved `auto` (and an omitted language)
         // fall back to the model's primary (English). The daemon only sends
@@ -94,22 +279,80 @@ impl VoxtralEngine {
             Some("auto") | None => "en",
             Some(code) => code,
         };
+        let started = std::time::Instant::now();
+        let tokens = self.decode(audio_data, lang_code, None)?;
+        let text = self
+            .tokenizer
+            .decode(&tokens, tekken::SpecialTokenPolicy::Ignore)
+            .map_err(|e| anyhow::anyhow!("Failed to decode tokens: {e}"))?;
+        info!(
+            "transcribed {:.1}s of audio into {} tokens in {:.1?}",
+            seconds(audio_data.len()),
+            tokens.len(),
+            started.elapsed()
+        );
+        post_process_transcription(&text)
+    }
 
-        let padded_audio = pad_to_chunk(audio_data, CHUNK_SAMPLES);
+    /// Hand the last transcription's working memory back to the driver.
+    ///
+    /// The pools keep the pages a request's activations lived in, so an idle
+    /// backend would otherwise hold its largest request's working memory —
+    /// over 2 GB on top of the weights — for as long as it stays loaded. The
+    /// release takes about 70 ms and the next request about 50 ms more to
+    /// allocate again, so the caller runs this after replying, not before.
+    pub fn release_memory(&self) {
+        self.model.release_scratch();
+    }
 
-        let audio_features =
-            audio::extract_features(&padded_audio, &self.mel_filters, &self.device)?;
-        let (result, _tokens) = transcribe_with_voxtral(
-            &self.model,
+    /// Audio to generated tokens, the model's own unless `forced`.
+    fn decode(
+        &self,
+        audio_data: &[f32],
+        lang_code: &str,
+        forced: Option<&[u32]>,
+    ) -> Result<Vec<u32>> {
+        let padded = audio::pad_to_chunk(audio_data, CHUNK_SAMPLES);
+        let features = audio::extract_features(&padded, &self.mel_filters);
+        let config = self.model.config();
+        let input_ids = prompt(
             &self.tokenizer,
-            &audio_features,
-            self.audio_token_id,
-            &self.device,
-            &self.cache.clone(),
+            features.chunks * config.audio_tokens_per_chunk(),
+            config.audio_token_id,
             lang_code,
         )?;
-        Ok(result)
+        let audio = self.model.encode_audio(&features, &mut Taps::off());
+        self.model
+            .generate(&input_ids, audio, MAX_NEW_TOKENS, forced, &mut Taps::off())
+            .map_err(|e| anyhow::anyhow!("Failed to generate tokens: {e}"))
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn seconds(samples: usize) -> f64 {
+    samples as f64 / f64::from(SAMPLE_RATE)
+}
+
+/// `<s>[INST][BEGIN_AUDIO][AUDIO]*N[/INST]lang:<code>[TRANSCRIBE]`.
+///
+/// The `lang:<code>` hint is tokenized: `lang:en` reproduces the model's
+/// original `[9909, 1058, 1262]`.
+fn prompt(
+    tokenizer: &Tekkenizer,
+    audio_tokens: usize,
+    audio_token_id: u32,
+    lang_code: &str,
+) -> Result<Vec<u32>> {
+    let lang = tokenizer
+        .encode(&format!("lang:{lang_code}"), false, false)
+        .map_err(|e| anyhow::anyhow!("encode lang prompt: {e}"))?;
+    let mut tokens = Vec::with_capacity(PROMPT_OPEN.len() + audio_tokens + lang.len() + 2);
+    tokens.extend(PROMPT_OPEN);
+    tokens.extend(std::iter::repeat_n(audio_token_id, audio_tokens));
+    tokens.push(INST_CLOSE);
+    tokens.extend(lang);
+    tokens.push(TRANSCRIBE);
+    Ok(tokens)
 }
 
 #[derive(Debug)]
@@ -148,35 +391,6 @@ fn resolve_files(dir: &Path) -> Result<ModelFiles> {
     })
 }
 
-/// Wire label for a candle device — used by `GET /v1/status`.
-fn device_str(device: &Device) -> &'static str {
-    match device {
-        Device::Cpu => "cpu",
-        Device::Cuda(_) => "cuda",
-        Device::Metal(_) => "metal",
-    }
-}
-
-/// Decode the embedded little-endian f32 mel-filter bank.
-fn load_mel_filters() -> Result<Vec<f32>> {
-    let mut mel_filters = vec![0f32; MEL_FILTERS.len() / 4];
-    Cursor::new(MEL_FILTERS).read_f32_into::<LittleEndian>(&mut mel_filters)?;
-    Ok(mel_filters)
-}
-
-/// Pad `audio` up to a whole multiple of `chunk` samples, zero-filling the tail.
-/// Input already aligned to `chunk` (including empty input) is returned as-is.
-fn pad_to_chunk(audio: &[f32], chunk: usize) -> Vec<f32> {
-    if audio.len().is_multiple_of(chunk) {
-        audio.to_vec()
-    } else {
-        let target = ((audio.len() / chunk) + 1) * chunk;
-        let mut p = audio.to_vec();
-        p.resize(target, 0.0);
-        p
-    }
-}
-
 /// Clean up Voxtral output formatting artifacts. (Ported verbatim.)
 fn post_process_transcription(text: &str) -> Result<String> {
     let mut cleaned = text.trim().to_string();
@@ -202,191 +416,20 @@ fn post_process_transcription(text: &str) -> Result<String> {
     Ok(cleaned)
 }
 
-fn transcribe_with_voxtral(
-    model: &VoxtralForConditionalGeneration,
-    tokenizer: &Tekkenizer,
-    audio_features: &Tensor,
-    audio_token_id: usize,
-    device: &Device,
-    cache: &VoxtralCache,
-    lang_code: &str,
-) -> Result<(String, Vec<u32>)> {
-    let audio_dims = audio_features.dims();
-    anyhow::ensure!(
-        audio_dims.len() == 3,
-        "audio features must be 3D (batch, mels, time), got {audio_dims:?}"
-    );
-    anyhow::ensure!(
-        audio_dims[1] == 128,
-        "audio features must have 128 mel bins, got {}",
-        audio_dims[1]
-    );
-
-    // <s>[INST][BEGIN_AUDIO][AUDIO]*N[/INST]lang:<code>[TRANSCRIBE]
-    let mut input_tokens = vec![1u32, 3u32, 25u32];
-    let batch_size = audio_features.dim(0)?;
-    let tokens_per_chunk = 375;
-    let num_audio_tokens = batch_size * tokens_per_chunk;
-    for _ in 0..num_audio_tokens {
-        #[allow(clippy::cast_possible_truncation)]
-        input_tokens.push(audio_token_id as u32);
-    }
-    // [/INST] then the `lang:<code>` hint (tokenized — `lang:en` reproduces the
-    // model's original [9909, 1058, 1262]) then [TRANSCRIBE].
-    input_tokens.push(4u32);
-    let lang_tokens = tokenizer
-        .encode(&format!("lang:{lang_code}"), false, false)
-        .map_err(|e| anyhow::anyhow!("encode lang prompt: {e}"))?;
-    input_tokens.extend_from_slice(&lang_tokens);
-    input_tokens.push(34u32);
-
-    let input_len = input_tokens.len();
-    let input_ids = Tensor::new(input_tokens, device)?.unsqueeze(0)?;
-
-    let config = VoxtralGenerationConfig {
-        max_new_tokens: 1000,
-        temperature: 0.0,
-        top_p: None,
-        device: device.clone(),
-        cache: Some(cache.clone()),
-    };
-
-    let generated_tokens = model
-        .generate(&input_ids, Some(audio_features), config)
-        .map_err(|e| anyhow::anyhow!("Failed to generate tokens: {e}"))?;
-
-    let new_tokens = if generated_tokens.len() > input_len {
-        &generated_tokens[input_len..]
-    } else {
-        &generated_tokens
-    };
-
-    let decoded_text = tokenizer
-        .decode(new_tokens, tekken::SpecialTokenPolicy::Ignore)
-        .map_err(|e| anyhow::anyhow!("Failed to decode tokens: {e}"))?;
-
-    let transcription = post_process_transcription(&decoded_text)?;
-    Ok((transcription, new_tokens.to_vec()))
-}
-
-fn load_model_weights<'a>(model_files: &'a [PathBuf], device: &Device) -> Result<VarBuilder<'a>> {
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(model_files, DType::F16, device)? };
-    Ok(vb)
-}
-
-fn load_model_config(config_file: &Path) -> Result<VoxtralConfig> {
-    let config_str = std::fs::read_to_string(config_file)?;
-    let json: serde_json::Value =
-        serde_json::from_str(&config_str).context("Failed to parse config.json")?;
-
-    let audio_token_id = json
-        .get("audio_token_id")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|v| usize::try_from(v).ok())
-        .unwrap_or(24);
-
-    Ok(VoxtralConfig {
-        audio_config: parse_audio_config(&json)?,
-        text_config: parse_text_config(&json)?,
-        audio_token_id,
-        projector_hidden_act: json
-            .get("projector_hidden_act")
-            .and_then(|v| v.as_str())
-            .unwrap_or("gelu")
-            .to_string(),
-    })
-}
-
-fn parse_audio_config(json: &serde_json::Value) -> Result<VoxtralEncoderConfig> {
-    let a = json
-        .get("audio_config")
-        .ok_or_else(|| anyhow::anyhow!("Missing audio_config"))?;
-    let u = |k: &str, d: usize| {
-        a.get(k)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(d)
-    };
-    let f = |k: &str, d: f64| a.get(k).and_then(serde_json::Value::as_f64).unwrap_or(d);
-    Ok(VoxtralEncoderConfig {
-        vocab_size: u("vocab_size", 51866),
-        hidden_size: u("hidden_size", 1280),
-        num_hidden_layers: u("num_hidden_layers", 32),
-        num_attention_heads: u("num_attention_heads", 20),
-        num_key_value_heads: u("num_key_value_heads", 20),
-        intermediate_size: u("intermediate_size", 5120),
-        dropout: f("dropout", 0.0),
-        attention_dropout: f("attention_dropout", 0.0),
-        activation_dropout: f("activation_dropout", 0.0),
-        activation_function: a
-            .get("activation_function")
-            .and_then(|v| v.as_str())
-            .unwrap_or("gelu")
-            .to_string(),
-        max_source_positions: u("max_source_positions", 1500),
-        layerdrop: f("layerdrop", 0.0),
-        initializer_range: f("initializer_range", 0.02),
-        scale_embedding: a
-            .get("scale_embedding")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        num_mel_bins: u("num_mel_bins", 128),
-        head_dim: u("head_dim", 64),
-    })
-}
-
-#[cfg(feature = "flash-attn")]
-const fn use_flash_attn() -> bool {
-    true
-}
-#[cfg(not(feature = "flash-attn"))]
-const fn use_flash_attn() -> bool {
-    false
-}
-
-fn parse_text_config(json: &serde_json::Value) -> Result<VoxtralLlamaConfig> {
-    let t = json
-        .get("text_config")
-        .ok_or_else(|| anyhow::anyhow!("Missing text_config"))?;
-    let u = |k: &str, d: usize| {
-        t.get(k)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(d)
-    };
-    #[allow(clippy::cast_possible_truncation)]
-    let rope_theta = t
-        .get("rope_theta")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(100_000_000.0) as f32;
-    Ok(VoxtralLlamaConfig {
-        vocab_size: u("vocab_size", 131_072),
-        hidden_size: u("hidden_size", 3072),
-        intermediate_size: u("intermediate_size", 8192),
-        num_hidden_layers: u("num_hidden_layers", 30),
-        num_attention_heads: u("num_attention_heads", 32),
-        num_key_value_heads: u("num_key_value_heads", 8),
-        head_dim: t
-            .get("head_dim")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok()),
-        rms_norm_eps: t
-            .get("rms_norm_eps")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(1e-5),
-        rope_theta,
-        max_position_embeddings: u("max_position_embeddings", 131_072),
-        use_flash_attn: use_flash_attn(),
-        tie_word_embeddings: t
-            .get("attention_bias")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tekken_path() -> Option<String> {
+        std::env::var("SUPER_STT_TEST_TEKKEN")
+            .ok()
+            .or_else(|| {
+                std::env::var("SUPER_STT_BACKEND_DIR")
+                    .ok()
+                    .map(|d| format!("{d}/models/voxtral-mini-3b-2507/tekken.json"))
+            })
+            .filter(|p| Path::new(p).exists())
+    }
 
     #[test]
     fn post_process_trims_and_collapses_whitespace() {
@@ -396,19 +439,14 @@ mod tests {
         );
     }
 
-    /// Guards the `lang:<code>` prompt tokenization: `lang:en` must reproduce the
-    /// model's original hardcoded ids `[9909, 1058, 1262]`, or the transcription
-    /// prompt would silently break on a tokenizer change. Tokenizer-only (no
-    /// model/GPU); self-skips unless a `tekken.json` is provisioned via
-    /// `SUPER_STT_TEST_TEKKEN` or `SUPER_STT_BACKEND_DIR`.
+    /// Guards the `lang:<code>` prompt tokenization: `lang:en` must reproduce
+    /// the model's original hardcoded ids `[9909, 1058, 1262]`, or the
+    /// transcription prompt would silently break on a tokenizer change.
+    /// Tokenizer-only (no model/GPU); self-skips unless a `tekken.json` is
+    /// provisioned via `SUPER_STT_TEST_TEKKEN` or `SUPER_STT_BACKEND_DIR`.
     #[test]
     fn lang_prompt_encoding_is_stable() {
-        let path = std::env::var("SUPER_STT_TEST_TEKKEN").ok().or_else(|| {
-            std::env::var("SUPER_STT_BACKEND_DIR")
-                .ok()
-                .map(|d| format!("{d}/models/voxtral-mini-3b-2507/tekken.json"))
-        });
-        let Some(path) = path.filter(|p| std::path::Path::new(p).exists()) else {
+        let Some(path) = tekken_path() else {
             return; // no tokenizer provisioned
         };
         let t = Tekkenizer::from_file(&path).expect("load tekken.json");
@@ -417,6 +455,20 @@ mod tests {
             vec![9909, 1058, 1262],
             "lang:en tokenization changed — the Voxtral prompt would break",
         );
+    }
+
+    /// The whole prompt around the audio, against the ids the candle backend
+    /// built. Self-skips without a tokenizer, as above.
+    #[test]
+    fn prompt_wraps_the_audio_placeholders() {
+        let Some(path) = tekken_path() else {
+            return;
+        };
+        let t = Tekkenizer::from_file(&path).expect("load tekken.json");
+        let ids = prompt(&t, 750, 24, "en").unwrap();
+        assert_eq!(&ids[..3], &[1, 3, 25]);
+        assert!(ids[3..753].iter().all(|&id| id == 24));
+        assert_eq!(&ids[753..], &[4, 9909, 1058, 1262, 34]);
     }
 
     #[test]
@@ -497,148 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn load_model_config_uses_defaults() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("config.json");
-        std::fs::write(&p, r#"{"audio_config":{},"text_config":{}}"#).unwrap();
-        let cfg = load_model_config(&p).unwrap();
-        assert_eq!(cfg.audio_token_id, 24);
-        assert_eq!(cfg.projector_hidden_act, "gelu");
-        assert_eq!(cfg.audio_config.num_mel_bins, 128);
+    fn the_reported_accelerator_matches_the_compiled_backend() {
+        let (_, name) = select_device(None);
+        // `flex` and `cpu` are two CPU backends and both report "cpu".
+        assert_eq!(name, BUILT_FOR);
+        assert_eq!(ON_GPU, BUILT_FOR != "cpu");
+        let (device, _) = select_device(None);
+        assert_eq!(model_dtype(&device) == DType::F32, !ON_GPU);
     }
 
     #[test]
-    fn load_model_config_parses_values() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("config.json");
-        std::fs::write(
-            &p,
-            r#"{
-                "audio_token_id": 42,
-                "projector_hidden_act": "silu",
-                "audio_config": {"hidden_size": 99},
-                "text_config": {"vocab_size": 123}
-            }"#,
-        )
-        .unwrap();
-        let cfg = load_model_config(&p).unwrap();
-        assert_eq!(cfg.audio_token_id, 42);
-        assert_eq!(cfg.projector_hidden_act, "silu");
-        assert_eq!(cfg.audio_config.hidden_size, 99);
-        assert_eq!(cfg.text_config.vocab_size, 123);
-    }
-
-    #[test]
-    fn load_model_config_requires_audio_and_text_sections() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("config.json");
-        std::fs::write(&p, r#"{"text_config":{}}"#).unwrap();
-        assert!(
-            load_model_config(&p)
-                .unwrap_err()
-                .to_string()
-                .contains("audio_config")
-        );
-        std::fs::write(&p, r#"{"audio_config":{}}"#).unwrap();
-        assert!(
-            load_model_config(&p)
-                .unwrap_err()
-                .to_string()
-                .contains("text_config")
-        );
-    }
-
-    #[test]
-    fn flash_attn_is_off_without_the_feature() {
-        assert!(!use_flash_attn());
-    }
-
-    #[test]
-    fn pad_to_chunk_leaves_exact_multiples_unchanged() {
-        let a = vec![0.5f32; 8];
-        assert_eq!(pad_to_chunk(&a, 4), a);
-    }
-
-    #[test]
-    fn pad_to_chunk_rounds_up_and_zero_fills() {
-        let p = pad_to_chunk(&[1.0f32; 5], 4);
-        assert_eq!(p.len(), 8);
-        assert_eq!(&p[..5], &[1.0; 5]);
-        assert_eq!(&p[5..], &[0.0; 3]);
-    }
-
-    #[test]
-    fn pad_to_chunk_pads_sub_chunk_input_to_one_chunk() {
-        assert_eq!(pad_to_chunk(&[1.0f32], 4).len(), 4);
-    }
-
-    #[test]
-    fn pad_to_chunk_empty_stays_empty() {
-        // 0 is a multiple of any chunk, so empty input yields ZERO chunks. The
-        // transcribe handler now rejects empty audio (400 invalid_audio) before it
-        // can reach here; this just pins the helper's own behavior at the boundary.
-        assert!(pad_to_chunk(&[], 4).is_empty());
-    }
-
-    #[test]
-    fn mel_filters_decode_to_expected_count() {
-        assert_eq!(
-            MEL_FILTERS.len() % 4,
-            0,
-            "embedded mel blob must be f32-aligned"
-        );
-        let f = load_mel_filters().unwrap();
-        assert_eq!(f.len(), MEL_FILTERS.len() / 4);
-        assert!(!f.is_empty());
-        assert!(f.iter().all(|x| x.is_finite()));
-    }
-
-    #[test]
-    fn device_str_maps_cpu() {
-        assert_eq!(device_str(&Device::Cpu), "cpu");
-    }
-
-    #[test]
-    fn audio_config_maps_fields() {
-        let json = serde_json::json!({"audio_config": {
-            "num_mel_bins": 80,
-            "head_dim": 32,
-            "scale_embedding": true,
-            "num_attention_heads": 16,
-            "activation_function": "relu"
-        }});
-        let cfg = parse_audio_config(&json).unwrap();
-        assert_eq!(cfg.num_mel_bins, 80);
-        assert_eq!(cfg.head_dim, 32);
-        assert!(cfg.scale_embedding);
-        assert_eq!(cfg.num_attention_heads, 16);
-        assert_eq!(cfg.activation_function, "relu");
-    }
-
-    #[test]
-    fn text_config_ties_embeddings_from_attention_bias_key() {
-        // Surprising mapping: tie_word_embeddings is read from the `attention_bias`
-        // JSON key. Pin it so a refactor can't silently rewire it.
-        let cfg = parse_text_config(&serde_json::json!({"text_config": {"attention_bias": true}}))
-            .unwrap();
-        assert!(cfg.tie_word_embeddings);
-        let cfg = parse_text_config(&serde_json::json!({"text_config": {}})).unwrap();
-        assert!(!cfg.tie_word_embeddings);
-    }
-
-    #[test]
-    fn text_config_casts_rope_theta_to_f32() {
-        let cfg =
-            parse_text_config(&serde_json::json!({"text_config": {"rope_theta": 1.0e7}})).unwrap();
-        assert!((cfg.rope_theta - 10_000_000.0_f32).abs() < 1.0);
-    }
-
-    #[test]
-    fn text_config_head_dim_is_optional() {
-        let none = parse_text_config(&serde_json::json!({"text_config": {}})).unwrap();
-        assert!(none.head_dim.is_none());
-        let some =
-            parse_text_config(&serde_json::json!({"text_config": {"head_dim": 64}})).unwrap();
-        assert_eq!(some.head_dim, Some(64));
+    fn a_mismatched_device_request_still_uses_the_compiled_backend() {
+        let other = if BUILT_FOR == "cpu" { "cuda" } else { "cpu" };
+        assert_eq!(select_device(Some(other)).1, BUILT_FOR);
+        assert_eq!(select_device(Some("")).1, BUILT_FOR);
     }
 }

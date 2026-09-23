@@ -32,6 +32,8 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
+      # Burn comes from a git dependency, so ~/.cargo/git carries most of the
+      # first build's cost.
       - name: Cache dependencies
         uses: actions/cache@v5
         with:
@@ -83,8 +85,9 @@ jobs:
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
 
       # Gates the build: `just check` runs clippy with `-D warnings`, so any lint
-      # fails CI. Default (CPU) features — `--all-features` would pull in `cuda`,
-      # which needs a toolkit absent on the hosted runner.
+      # fails CI. Default (CPU, `flex`) features — the accelerators are
+      # mutually exclusive Burn features, and `--all-features` would also pull
+      # in the CUDA and ROCm bindings, whose headers the hosted runner lacks.
       - name: Run clippy
         run: just check
 

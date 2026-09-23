@@ -2,11 +2,16 @@
 //! Voxtral subprocess backend: serves the Super STT `/v1` contract over a
 //! pathname Unix socket (`SUPER_STT_BACKEND_SOCKET`), loading the model from
 //! `SUPER_STT_BACKEND_DIR/models/<name>`. Self-contained — no super-stt deps.
+//!
+//! The model runs on Burn, whose GPU kernels CubeCL compiles at runtime and
+//! keeps in `SUPER_STT_BACKEND_CACHE_DIR` — the one writable directory a
+//! daemon new enough to grant it provides.
 
 // doc lint trips on prose like "candle"/"super-stt".
 #![allow(clippy::doc_markdown)]
 
 mod inference;
+mod voxtral;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -74,9 +79,26 @@ struct AppState {
     engine: Mutex<Option<VoxtralEngine>>,
 }
 
+/// Names the one writable directory the sandbox grants, where the compiled
+/// kernels go. Absent when the daemon grants none.
+const ENV_CACHE_DIR: &str = "SUPER_STT_BACKEND_CACHE_DIR";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Before anything touches a device: CubeCL's configuration, which says
+    // where compiled kernels are kept and which stream work runs on, is frozen
+    // the first time it is read.
+    let cache_dir = std::env::var_os(ENV_CACHE_DIR).map(PathBuf::from);
+    match &cache_dir {
+        Some(dir) => log::info!("keeping compiled kernels in {}", dir.display()),
+        None => log::warn!(
+            "{ENV_CACHE_DIR} is not set, so the GPU kernels have nowhere to be kept and are \
+             recompiled on every load"
+        ),
+    }
+    inference::configure_cubecl(cache_dir.as_deref());
 
     let socket = std::env::var("SUPER_STT_BACKEND_SOCKET")
         .context("SUPER_STT_BACKEND_SOCKET must be set")?;
@@ -186,10 +208,11 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
         st.reason = None;
     }
     let dir = s.backend_dir.join("models").join(&req.name);
-    let force_cpu = req.device.as_deref() == Some("cpu");
+    let device = req.device;
     let s2 = Arc::clone(&s);
     tokio::spawn(async move {
-        let res = tokio::task::spawn_blocking(move || VoxtralEngine::load(&dir, force_cpu)).await;
+        let res =
+            tokio::task::spawn_blocking(move || VoxtralEngine::load(&dir, device.as_deref())).await;
         match res {
             Ok(Ok(engine)) => {
                 let label = engine.device_label().to_string();
@@ -251,14 +274,29 @@ async fn transcribe(
     let audio = req.audio_data;
     let language = req.language;
     let s2 = Arc::clone(&s);
-    let result = tokio::task::spawn_blocking(move || {
+    // The reply goes out before the engine hands its working memory back, which
+    // the caller has no reason to wait for. The lock is held until that is done,
+    // so a request arriving meanwhile waits for it rather than racing it.
+    let (reply, replied) = tokio::sync::oneshot::channel();
+    let worker = tokio::task::spawn_blocking(move || {
         let mut guard = s2.engine.lock().unwrap();
-        let engine = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("engine not loaded"))?;
-        engine.transcribe(&audio, sample_rate, language.as_deref())
-    })
-    .await;
+        let Some(engine) = guard.as_mut() else {
+            let _ = reply.send(Err(anyhow::anyhow!("engine not loaded")));
+            return;
+        };
+        // Released whether or not the transcription failed: a failed request's
+        // memory is just as dead.
+        let _ = reply.send(engine.transcribe(&audio, sample_rate, language.as_deref()));
+        engine.release_memory();
+    });
+    let result = match replied.await {
+        Ok(result) => Ok(result),
+        // The reply was dropped unsent, which only a panic does: the join
+        // error carries it.
+        Err(_) => worker
+            .await
+            .map(|()| Err(anyhow::anyhow!("the transcription ended without a reply"))),
+    };
     match result {
         Ok(Ok(text)) => (
             StatusCode::OK,

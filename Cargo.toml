@@ -4,38 +4,42 @@
 
 [package]
     name = "super-stt-backend-voxtral"
-    version = "0.1.1"
+    version = "0.2.0"
     edition = "2024"
+    description = "Voxtral speech-to-text backend for Super STT."
+    repository = "https://github.com/jorge-menjivar/super-stt-voxtral"
     license = "GPL-3.0-only"
     publish = false
 
 # Own workspace root — never absorbed into a parent workspace.
 [workspace]
 
-    # cross (cross-rs): forward CUDA_COMPUTE_CAP into the build container so candle's
-    # kernels compile for the requested compute capability — `nvidia-smi` isn't
-    # available inside `docker build`, so without this candle-kernels fails to detect
-    # the cap. The release workflow sets CUDA_COMPUTE_CAP per matrix entry.
-    [workspace.metadata.cross.build.env]
-        passthrough = ["CUDA_COMPUTE_CAP"]
+[[bin]]
+    name = "super-stt-backend-voxtral"
+    path = "src/main.rs"
 
 [dependencies]
     anyhow = "1"
     axum = { version = "0.8", default-features = false, features = ["json", "tokio"] }
-    byteorder = "1.5"
-    # Pinned to the same candle revision the daemon resolves, so the
-    # candle_transformers Voxtral API matches.
-    candle-core = {
-        git = "https://github.com/jorge-menjivar/candle.git",
-        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
+    # The model in `src/voxtral` is written against Burn, pinned by revision to
+    # the fork's `qwen3-tts` branch, which the Qwen TTS backend builds on too:
+    # upstream Burn is missing fixes that fork carries, to its fusion crates and
+    # to `into_data`, whose bytes a later in-place kernel could overwrite. `burn`
+    # has no stability guarantee between revisions anyway.
+    #
+    # Burn is what buys this backend ROCm and Vulkan, which candle cannot reach
+    # at all — CubeCL compiles every kernel at runtime for whatever device it
+    # finds, which is also why one build per target covers every GPU generation
+    # instead of one per CUDA compute capability.
+    burn = {
+        git = "https://github.com/jorge-menjivar/burn.git",
+        rev = "1e9de733d6ff94f34c34a5765ea0b4926478f989",
+        features = ["default", "cubecl"]
     }
-    candle-nn = {
-        git = "https://github.com/jorge-menjivar/candle.git",
-        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
-    }
-    candle-transformers = {
-        git = "https://github.com/jorge-menjivar/candle.git",
-        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
+    burn-store = {
+        git = "https://github.com/jorge-menjivar/burn.git",
+        rev = "1e9de733d6ff94f34c34a5765ea0b4926478f989",
+        features = ["std", "safetensors"]
     }
     env_logger = "0.11"
     hyper = { version = "1", features = ["http1", "server"] }
@@ -54,11 +58,38 @@
     hound = "3.5"
     http-body-util = "0.1"
     hyper = { version = "1", features = ["client", "http1"] }
+    # Reads the candle dump the layer-by-layer parity test compares against.
+    # The version burn-store already builds.
+    safetensors = "0.7"
     tempfile = "3"
     # `ServiceExt::oneshot` for in-process router/handler tests.
     tower = { version = "0.5", features = ["util"] }
 
+# One accelerator per build, as the asset it ships in declares. `flex` is the
+# default because it is the one that runs anywhere: a pure-Rust CPU backend
+# with nothing to detect and no driver to find.
 [features]
-    default = []
-    cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-    flash-attn = ["candle-transformers/flash-attn"]
+    default = ["flex"]
+    cpu = ["burn/cpu"]
+    cuda = ["burn/cuda"]
+    flex = ["burn/flex"]
+    metal = ["burn/metal"]
+    rocm = ["burn/rocm"]
+    vulkan = ["burn/vulkan"]
+    wgpu = ["burn/wgpu"]
+
+# The CubeCL the Burn fork's `qwen3-tts` branch builds against: the pinned
+# upstream revision plus its `compilation-cache-default` branch. A `[patch]` in
+# Burn's own manifest does not reach a build that merely depends on Burn —
+# patches come from the root of the crate being built — so this backend has to
+# repeat it, or it would build a different CubeCL than the fork was measured
+# on. It keeps compiled kernels across runs by default, coalesces the sliced
+# memory pool's free slices lazily, lets the channel server take a partial
+# batch when its producer pauses, and has the CPU runtime copy a read out of
+# the live buffer instead of handing back a view of it.
+[patch."https://github.com/tracel-ai/cubecl"]
+    cubecl = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
+    cubecl-common = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
+    cubecl-environment = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
+    cubecl-ir = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
+    cubecl-zspace = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
