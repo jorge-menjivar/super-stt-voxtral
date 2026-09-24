@@ -143,10 +143,12 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
 /// next choice; it is also what the candle backend ran in, and the parity
 /// test measures the two as equally faithful.
 ///
-/// Never bf16 on Vulkan. Drivers often store and convert it without any
-/// arithmetic on it, and Burn computes garbage there rather than failing;
-/// and one that does advertise the arithmetic, NVIDIA's 610.57 on an RTX
-/// 3090, segfaults in its SPIR-V compiler building the first bf16 kernels.
+/// Never bf16 on Vulkan. SPIR-V's bf16 extension allows the type only in
+/// conversions, dot products and cooperative matrices, never in arithmetic,
+/// yet CubeCL compiles bf16 arithmetic whenever a driver reports the type.
+/// That code is invalid: some drivers compute garbage from it, and NVIDIA's
+/// 610.57 on an RTX 3090 segfaults in its SPIR-V compiler on the first kernel
+/// that does any, the tanh GELU after the encoder's first convolution.
 /// f16 transcribes there as it does on CUDA. f32 is the next fallback: exact,
 /// but its weights alone are 19 GB, which a 24 GB card only runs through by
 /// retrying allocations that ran out of memory.

@@ -145,9 +145,10 @@ What it measured on this port, every tap against candle's f32:
   layer, up to 2.9x it on a few decoding steps' logits; the tokens match.
 
 A GPU picks bf16 when it can compute in it and f16 otherwise, and the Vulkan
-build always takes f16. Vulkan drivers often store bf16 without any arithmetic
-on it, and the NVIDIA one above, which advertises the arithmetic, segfaults in
-its SPIR-V compiler building the first bf16 kernel.
+build always takes f16. SPIR-V allows bf16 only in conversions, dot products
+and cooperative matrices, never in arithmetic, but CubeCL compiles bf16
+arithmetic anyway: some drivers compute garbage from it, and the NVIDIA one
+above segfaults in its SPIR-V compiler on the first such kernel.
 
 ## License
 
