@@ -4,6 +4,8 @@
 //! back become a transcript. The model itself is in [`crate::voxtral`].
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Error, Result};
 use burn::prelude::Device;
@@ -11,6 +13,7 @@ use burn::tensor::DType;
 use log::{info, warn};
 use tekken::Tekkenizer;
 
+use crate::progress::{Measure, Phase, Report, Step, Tracker};
 use crate::voxtral::audio::{self, CHUNK_SAMPLES, SAMPLE_RATE};
 use crate::voxtral::config::VoxtralConfig;
 use crate::voxtral::model::{Taps, Voxtral};
@@ -53,6 +56,21 @@ const BUILT_FOR: &str = if cfg!(feature = "cuda") {
 } else {
     "metal"
 };
+
+/// The entries a first load's warm-up writes to the kernel cache, which is
+/// what its progress is measured against: tuning results and compiled
+/// kernels, 42 and 672 on CUDA and 42 and 244 on Vulkan, measured with Voxtral
+/// Mini on an RTX 3090. ROCm is taken to be CUDA and Metal to be Vulkan, unmeasured.
+/// Only the pace of the bar rides on it: past the estimate it slows down short
+/// of the end rather than stopping, see `progress::estimate`.
+const WARM_UP_CACHE_ENTRIES: u64 = if cfg!(any(feature = "cuda", feature = "rocm")) {
+    714
+} else {
+    286
+};
+
+/// Where CubeCL keeps this backend's kernels, when the daemon grants a place.
+static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The device this build runs on, and the name `GET /v1/status` reports.
 ///
@@ -144,6 +162,7 @@ pub fn configure_cubecl(cache_dir: Option<&Path>) {
     config.compilation.cache = true;
     if let Some(dir) = cache_dir {
         config.environment.path = CacheConfig::Directory(dir.to_path_buf());
+        let _ = CACHE_DIR.set(dir.to_path_buf());
     }
     config.streaming.policy = StreamPolicy::Single;
     // `false` means something already read the configuration and this call is
@@ -164,19 +183,72 @@ pub struct VoxtralEngine {
 
 impl VoxtralEngine {
     /// Load the model from a directory containing `config.json`, `tekken.json`
-    /// and the `*.safetensors` shards, then warm it up.
-    pub fn load(model_dir: &Path, device: Option<&str>) -> Result<Self> {
+    /// and the `*.safetensors` shards, then warm it up, reporting how far it
+    /// has got into `report` as it goes.
+    pub fn load(
+        model_dir: &Path,
+        device: Option<&str>,
+        report: &(dyn Fn(Report) + Sync),
+    ) -> Result<Self> {
         let files = resolve_files(model_dir)?;
         let config = VoxtralConfig::from_json(&std::fs::read_to_string(&files.config)?)
             .with_context(|| format!("parsing {}", files.config.display()))?;
+        let marker = model_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(warm_marker);
+        let phase = if marker.as_ref().is_some_and(|m| m.exists()) {
+            Phase::Loading
+        } else {
+            Phase::InitialSetup
+        };
+        info!("loading Voxtral from {} ({phase:?})", model_dir.display());
+        let tracker = Tracker::new(phase, report);
+        let (engine, warmed) = std::thread::scope(|scope| {
+            scope.spawn(|| tracker.run());
+            // Stops the sampler however this ends, a panic included: the
+            // scope waits for it before it lets a panic through.
+            let _finish = Finish(&tracker);
+            Self::load_tracked(&files, &config, device, phase, &tracker)
+        })?;
+        if warmed && let Some(marker) = marker {
+            let written = marker
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&marker, b""));
+            if let Err(e) = written {
+                warn!("could not mark {} warm: {e}", marker.display());
+            }
+        }
+        Ok(engine)
+    }
+
+    /// [`Self::load`] under its tracker. Returns the engine and whether its
+    /// warm-up ran to the end.
+    fn load_tracked(
+        files: &ModelFiles,
+        config: &VoxtralConfig,
+        device: Option<&str>,
+        phase: Phase,
+        tracker: &Tracker<'_>,
+    ) -> Result<(Self, bool)> {
         let (device, device_name) = select_device(device);
         let dtype = model_dtype(&device);
-        info!(
-            "loading Voxtral on {device_name} ({dtype:?}) from {}",
-            model_dir.display()
-        );
+        info!("on {device_name}, in {dtype:?}");
         let started = std::time::Instant::now();
-        let model = Voxtral::load(&config, &files.weights, dtype, &device).map_err(Error::msg)?;
+        let total = files.weights.iter().try_fold(0, |sum, shard| {
+            std::fs::metadata(shard).map(|m| sum + m.len())
+        })?;
+        let read = Arc::new(AtomicU64::new(0));
+        tracker.enter(
+            Step::LoadingWeights,
+            Measure::Bytes {
+                read: Arc::clone(&read),
+                total,
+            },
+        );
+        let model =
+            Voxtral::load(config, &files.weights, dtype, &device, &read).map_err(Error::msg)?;
         let tokenizer = Tekkenizer::from_file(&files.tokenizer).map_err(Error::msg)?;
         info!("Voxtral mapped in {:.1?}", started.elapsed());
         let mut engine = Self {
@@ -185,8 +257,13 @@ impl VoxtralEngine {
             mel_filters: audio::mel_filters(),
             device_name,
         };
-        engine.warm_up();
-        Ok(engine)
+        let step = match phase {
+            Phase::InitialSetup => Step::BuildingKernels,
+            Phase::Loading => Step::WarmingUp,
+        };
+        tracker.enter(step, Measure::cache_entries(WARM_UP_CACHE_ENTRIES));
+        let warmed = engine.warm_up();
+        Ok((engine, warmed))
     }
 
     /// Device label for `GET /v1/status`.
@@ -206,14 +283,16 @@ impl VoxtralEngine {
     /// A failure is logged and swallowed: the model is loaded and usable, and
     /// refusing the load over a warm-up would turn a slow first request into
     /// no service at all.
-    fn warm_up(&mut self) {
+    ///
+    /// Returns whether it ran to the end.
+    fn warm_up(&mut self) -> bool {
         let started = std::time::Instant::now();
         let silence = vec![0.0; CHUNK_SAMPLES];
         // Forced, since the model is right to answer silence with its
         // end-of-sequence token and a run that stops at the prefill warms no
         // decoding step.
         let result = self.decode(&silence, "en", Some(&WARM_UP_TOKENS));
-        match result {
+        match &result {
             Ok(tokens) => info!(
                 "warmed up in {:.1?} ({} tokens)",
                 started.elapsed(),
@@ -222,6 +301,7 @@ impl VoxtralEngine {
             Err(e) => warn!("the warm-up failed after {:.1?}: {e:#}", started.elapsed()),
         }
         self.model.release_scratch();
+        result.is_ok()
     }
 
     /// Transcribe 16 kHz mono f32 audio. (The daemon resamples upstream.)
@@ -288,6 +368,27 @@ impl VoxtralEngine {
         self.model
             .generate(&input_ids, audio, MAX_NEW_TOKENS, forced, &mut Taps::off())
             .map_err(|e| anyhow::anyhow!("Failed to generate tokens: {e}"))
+    }
+}
+
+/// Where a load records that `model` finished a warm-up with this build, so
+/// that the next load of it is not an initial setup. It sits beside the
+/// kernels it vouches for: clearing the cache clears it too, and a new build
+/// looks for one of its own. Without a cache directory there is none, and
+/// every load is an initial setup, since every load compiles everything.
+fn warm_marker(model: &str) -> Option<PathBuf> {
+    CACHE_DIR.get().map(|dir| {
+        dir.join("voxtral-warm")
+            .join(format!("{model}-{}-{BUILT_FOR}", env!("CARGO_PKG_VERSION")))
+    })
+}
+
+/// Stops a [`Tracker`] when dropped.
+struct Finish<'a, 'b>(&'a Tracker<'b>);
+
+impl Drop for Finish<'_, '_> {
+    fn drop(&mut self) {
+        self.0.finish();
     }
 }
 

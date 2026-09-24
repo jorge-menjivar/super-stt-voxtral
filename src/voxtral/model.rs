@@ -3,6 +3,8 @@
 //! prompt, and greedy decoding over the result.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use burn::nn::{Embedding, EmbeddingConfig, Linear};
 use burn::prelude::*;
@@ -13,7 +15,7 @@ use crate::voxtral::audio::{CHUNK_FRAMES, Features};
 use crate::voxtral::config::{TextConfig, VoxtralConfig};
 use crate::voxtral::encoder::{AudioEncoder, Projector};
 use crate::voxtral::transformer::{Transformer, TransformerState};
-use crate::voxtral::{CheckpointAdapter, check_shards, linear_config};
+use crate::voxtral::{CheckpointAdapter, ReadCounter, check_shards, linear_config};
 
 /// End-of-sequence tokens, the set candle's `generate` stopped on.
 const EOS_TOKENS: [u32; 4] = [2, 128_001, 128_009, 128_256];
@@ -155,19 +157,21 @@ pub struct Voxtral {
 
 impl Voxtral {
     /// Build the model and fill it from the checkpoint's shards, casting every
-    /// weight to `dtype`.
+    /// weight to `dtype`. `read` counts the checkpoint's bytes as they are
+    /// read.
     pub fn load(
         config: &VoxtralConfig,
         shards: &[PathBuf],
         dtype: DType,
         device: &Device,
+        read: &Arc<AtomicU64>,
     ) -> Result<Self, String> {
         // The weights go to the persistent pool: exact-fit slices that live
         // for the process. Left to the dynamic pools they would share pages
         // with the activations, and those pools keep whatever the worst
         // moment of a workload asked for.
         let model = device.memory_persistent_allocations((), |()| {
-            Self::load_weights(config, shards, dtype, device)
+            Self::load_weights(config, shards, dtype, device, read)
         })?;
         Ok(Self {
             model,
@@ -182,6 +186,7 @@ impl Voxtral {
         shards: &[PathBuf],
         dtype: DType,
         device: &Device,
+        read: &Arc<AtomicU64>,
     ) -> Result<Model, String> {
         // Parameters are initialized lazily, so nothing is allocated for the
         // random weights the checkpoint then replaces.
@@ -193,7 +198,11 @@ impl Voxtral {
         let mut results = Vec::with_capacity(shards.len());
         for shard in shards {
             let mut store = SafetensorsStore::from_file(shard)
-                .with_from_adapter(CheckpointAdapter.chain(FloatCastAdapter::to(dtype)))
+                .with_from_adapter(
+                    ReadCounter(Arc::clone(read))
+                        .chain(CheckpointAdapter)
+                        .chain(FloatCastAdapter::to(dtype)),
+                )
                 .remap(remapper()?)
                 .allow_partial(true);
             results.push(

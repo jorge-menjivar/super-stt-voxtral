@@ -11,6 +11,7 @@
 #![allow(clippy::doc_markdown)]
 
 mod inference;
+mod progress;
 mod voxtral;
 
 use std::path::PathBuf;
@@ -30,6 +31,7 @@ use serde_json::{Value, json};
 use tokio::net::UnixListener;
 
 use inference::VoxtralEngine;
+use progress::Report;
 
 /// This backend implements exactly one provider (the model routing class every
 /// one of its models declares). A `/v1/load` naming any other provider is
@@ -60,6 +62,8 @@ struct Status {
     model: Option<String>,
     device: Option<String>,
     reason: Option<String>,
+    /// How far a load has got; reported only while `state` is `loading`.
+    load: Report,
 }
 
 impl Default for Status {
@@ -69,6 +73,7 @@ impl Default for Status {
             model: None,
             device: None,
             reason: None,
+            load: Report::default(),
         }
     }
 }
@@ -168,6 +173,17 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     if let Some(r) = &st.reason {
         out["reason"] = json!(r);
     }
+    if matches!(st.state, LoadState::Loading) {
+        if let Some(phase) = st.load.phase {
+            out["phase"] = json!(phase.as_str());
+        }
+        if let Some(step) = st.load.step {
+            out["step"] = json!(step.as_str());
+        }
+        if let Some(progress) = st.load.progress {
+            out["progress"] = json!(progress);
+        }
+    }
     Json(out)
 }
 
@@ -206,6 +222,7 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
         st.model = Some(req.name.clone());
         st.device = None;
         st.reason = None;
+        st.load = Report::default();
     }
     let dir = s.backend_dir.join("models").join(&req.name);
     let device = req.device;
@@ -224,7 +241,13 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
             // new one asks for any.
             *engine = None;
             s3.engine.clear_poison();
-            let loaded = VoxtralEngine::load(&dir, device.as_deref())?;
+            let report = |load: Report| {
+                let mut st = s3.status.lock().unwrap_or_else(PoisonError::into_inner);
+                if matches!(st.state, LoadState::Loading) {
+                    st.load = load;
+                }
+            };
+            let loaded = VoxtralEngine::load(&dir, device.as_deref(), &report)?;
             let label = loaded.device_label().to_string();
             *engine = Some(loaded);
             anyhow::Ok(label)
@@ -437,6 +460,32 @@ mod tests {
         assert_eq!(v["model"]["provider"], "local_voxtral");
         assert_eq!(v["device"], "cuda");
         assert_eq!(v["reason"], "recovered");
+    }
+
+    #[tokio::test]
+    async fn status_reports_load_progress_only_while_loading() {
+        let state = test_state();
+        {
+            let mut st = state.status.lock().unwrap();
+            st.state = LoadState::Loading;
+            st.load = Report {
+                phase: Some(progress::Phase::InitialSetup),
+                step: Some(progress::Step::BuildingKernels),
+                progress: Some(0.5),
+            };
+        }
+        let get = || Request::get("/v1/status").body(Body::empty()).unwrap();
+        let v = json_body(router(Arc::clone(&state)).oneshot(get()).await.unwrap()).await;
+        assert_eq!(v["state"], "loading");
+        assert_eq!(v["phase"], "initial_setup");
+        assert_eq!(v["step"], "building_kernels");
+        assert_eq!(v["progress"], 0.5);
+
+        state.status.lock().unwrap().state = LoadState::Ready;
+        let v = json_body(router(state).oneshot(get()).await.unwrap()).await;
+        for field in ["phase", "step", "progress"] {
+            assert!(v.get(field).is_none(), "{field} outside a load: {v}");
+        }
     }
 
     #[tokio::test]

@@ -168,7 +168,9 @@ fn layers_match_candle() {
     shards.sort();
     let (device, device_name) = select_device(None);
     let started = std::time::Instant::now();
-    let model = Voxtral::load(&config, &shards, dtype, &device).expect("loading the weights");
+    let read = std::sync::Arc::default();
+    let model =
+        Voxtral::load(&config, &shards, dtype, &device, &read).expect("loading the weights");
     eprintln!(
         "loaded on {device_name} in {dtype:?} in {:.1?}",
         started.elapsed()
