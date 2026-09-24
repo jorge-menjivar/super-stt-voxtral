@@ -204,14 +204,14 @@ impl VoxtralEngine {
         };
         info!("loading Voxtral from {} ({phase:?})", model_dir.display());
         let tracker = Tracker::new(phase, report);
-        let (engine, warmed) = std::thread::scope(|scope| {
+        let engine = std::thread::scope(|scope| {
             scope.spawn(|| tracker.run());
             // Stops the sampler however this ends, a panic included: the
             // scope waits for it before it lets a panic through.
             let _finish = Finish(&tracker);
             Self::load_tracked(&files, &config, device, phase, &tracker)
         })?;
-        if warmed && let Some(marker) = marker {
+        if let Some(marker) = marker {
             let written = marker
                 .parent()
                 .map_or(Ok(()), std::fs::create_dir_all)
@@ -223,15 +223,14 @@ impl VoxtralEngine {
         Ok(engine)
     }
 
-    /// [`Self::load`] under its tracker. Returns the engine and whether its
-    /// warm-up ran to the end.
+    /// [`Self::load`] under its tracker.
     fn load_tracked(
         files: &ModelFiles,
         config: &VoxtralConfig,
         device: Option<&str>,
         phase: Phase,
         tracker: &Tracker<'_>,
-    ) -> Result<(Self, bool)> {
+    ) -> Result<Self> {
         let (device, device_name) = select_device(device);
         let dtype = model_dtype(&device);
         info!("on {device_name}, in {dtype:?}");
@@ -262,8 +261,8 @@ impl VoxtralEngine {
             Phase::Loading => Step::WarmingUp,
         };
         tracker.enter(step, Measure::cache_entries(WARM_UP_CACHE_ENTRIES));
-        let warmed = engine.warm_up();
-        Ok((engine, warmed))
+        engine.warm_up()?;
+        Ok(engine)
     }
 
     /// Device label for `GET /v1/status`.
@@ -280,28 +279,27 @@ impl VoxtralEngine {
     /// encoder, the projector, the prefill and a few decoding steps at the
     /// shapes a clip under 30 seconds — the daemon's usual request — uses.
     ///
-    /// A failure is logged and swallowed: the model is loaded and usable, and
-    /// refusing the load over a warm-up would turn a slow first request into
-    /// no service at all.
-    ///
-    /// Returns whether it ran to the end.
-    fn warm_up(&mut self) -> bool {
+    /// A failure fails the load. The warm-up runs what every transcription
+    /// runs, so a kernel that will not compile or a card that runs out of
+    /// memory here fails each request after it too; better the daemon hears
+    /// it now, with the reason, than a backend that says `ready` and never
+    /// transcribes. (A bf16 kernel on an AMD card did exactly that.)
+    fn warm_up(&mut self) -> Result<()> {
         let started = std::time::Instant::now();
         let silence = vec![0.0; CHUNK_SAMPLES];
         // Forced, since the model is right to answer silence with its
         // end-of-sequence token and a run that stops at the prefill warms no
         // decoding step.
         let result = self.decode(&silence, "en", Some(&WARM_UP_TOKENS));
-        match &result {
-            Ok(tokens) => info!(
-                "warmed up in {:.1?} ({} tokens)",
-                started.elapsed(),
-                tokens.len()
-            ),
-            Err(e) => warn!("the warm-up failed after {:.1?}: {e:#}", started.elapsed()),
-        }
         self.model.release_scratch();
-        result.is_ok()
+        let tokens = result
+            .with_context(|| format!("the warm-up failed after {:.1?}", started.elapsed()))?;
+        info!(
+            "warmed up in {:.1?} ({} tokens)",
+            started.elapsed(),
+            tokens.len()
+        );
+        Ok(())
     }
 
     /// Transcribe 16 kHz mono f32 audio. (The daemon resamples upstream.)
