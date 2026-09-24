@@ -147,8 +147,9 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
 /// arithmetic on it, and Burn computes garbage there rather than failing;
 /// and one that does advertise the arithmetic, NVIDIA's 610.57 on an RTX
 /// 3090, segfaults in its SPIR-V compiler building the first bf16 kernels.
-/// f16 transcribes there as it does on CUDA, and f32 does not fit a 24 GB
-/// card.
+/// f16 transcribes there as it does on CUDA. f32 is the next fallback: exact,
+/// but its weights alone are 19 GB, which a 24 GB card only runs through by
+/// retrying allocations that ran out of memory.
 ///
 /// On a CPU, f32: bf16 is slower there rather than faster.
 pub fn model_dtype(device: &Device) -> DType {
