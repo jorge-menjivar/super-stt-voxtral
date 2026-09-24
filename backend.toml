@@ -88,7 +88,7 @@
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["gpu"]
-    # Measured on an RTX 3090 in bf16: 9.0 GiB resident while idle, 8.7 GiB of
+    # Measured on an RTX 3090 in f16: 9.0 GiB resident while idle, 8.7 GiB of
     # it weights; a transcription takes it to about 11.3 GiB with the key/value
     # caches and activations, handed back after each one. The first load on a
     # machine peaks near 16.2 GiB for a minute or two while CubeCL tunes its

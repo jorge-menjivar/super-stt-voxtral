@@ -15,7 +15,7 @@ use crate::voxtral::audio::{CHUNK_FRAMES, Features};
 use crate::voxtral::config::{TextConfig, VoxtralConfig};
 use crate::voxtral::encoder::{AudioEncoder, Projector};
 use crate::voxtral::transformer::{Transformer, TransformerState};
-use crate::voxtral::{CheckpointAdapter, ReadCounter, check_shards, linear_config};
+use crate::voxtral::{CheckpointAdapter, HalfCast, ReadCounter, check_shards, linear_config};
 
 /// End-of-sequence tokens, the set candle's `generate` stopped on.
 const EOS_TOKENS: [u32; 4] = [2, 128_001, 128_009, 128_256];
@@ -201,6 +201,7 @@ impl Voxtral {
                 .with_from_adapter(
                     ReadCounter(Arc::clone(read))
                         .chain(CheckpointAdapter)
+                        .chain(HalfCast { target: dtype })
                         .chain(FloatCastAdapter::to(dtype)),
                 )
                 .remap(remapper()?)

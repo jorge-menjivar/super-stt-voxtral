@@ -55,7 +55,7 @@ Vulkan and Metal. The port lives in `src/voxtral`:
 Measured on an RTX 3090 against the candle build this backend shipped before
 (v0.1.1), with requests back to back:
 
-| | candle (f16) | Burn (bf16) |
+| | candle (f16) | Burn |
 |---|---:|---:|
 | 11-second clip (27 tokens) | 0.91–0.93 s | 0.77–0.88 s |
 | 34-second clip (79 tokens) | 2.29–2.31 s | 1.71–1.80 s |
@@ -64,6 +64,11 @@ Measured on an RTX 3090 against the candle build this backend shipped before
 | load, first ever on the machine | 3.2 s | 4–5 min |
 | VRAM, idle | 9.8–10.7 GiB | 9.0 GiB |
 | VRAM, during a transcription | 10.7 GiB | 11.3 GiB |
+
+The Burn column was measured in bf16. The backend now runs in f16 (see below),
+and the two timed back to back on the same card are the same speed: 0.83–1.03 s
+for the short clip and 1.88–2.13 s for the long one each, with other work on
+the CPU at the time. A warm load in f16 takes 6.8 s.
 
 A request after a pause takes longer on both, 1.1–1.3 s for the short clip on
 candle and 0.8–1.1 s on Burn: the GPU drops to its idle clocks in between.
@@ -75,6 +80,12 @@ The Vulkan build on the same card (NVIDIA driver 610.57, f16) transcribes the
 same text: 0.82–0.86 s for the short clip and 1.78–1.86 s for the long one,
 8.8 GiB idle, and a load of 13.5 s with the kernel cache warm or 83 s the
 first time.
+
+The ROCm build on an AMD BC-250 (gfx1013, ROCm 7.2.4), a small RDNA1 part that
+shares 16 GB with its CPU, transcribes both clips word for word as CUDA does:
+26.6 s for the short one and 46 s for the long one, slower than real time on
+that chip. It peaks at 12 GB of the shared memory, and its first load takes
+about 8 minutes.
 
 The decoder's key/value caches are allocated up front and every decoding step
 attends to all of them through a mask, so every step runs the same kernels on
@@ -131,7 +142,7 @@ and the cosine distance:
 ```bash
 export SUPER_STT_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
 just parity                                              # Vulkan, f16
-just parity bf16 --no-default-features --features cuda   # CUDA, bf16
+just parity f16 --no-default-features --features cuda    # CUDA, f16
 ```
 
 What it measured on this port, every tap against candle's f32:
@@ -139,22 +150,32 @@ What it measured on this port, every tap against candle's f32:
 - **f32 on the CPU**, the build the port was first checked on and has since
   dropped: the features are bit-identical, every layer is within 7e-4
   relative error, and the tokens match.
-- **f16 on CUDA**: every layer drifts as much as candle's own f16 build does
-  (0.398 against 0.399 at the last decoder layer) or less.
-- **bf16 on CUDA** — what ships: 1.2–3x candle f16's drift, which is the three
-  mantissa bits bf16 gives up; the tokens still match. The deep-decoder drift
-  in both 16-bit types comes from activations in the hundreds, not the port.
+- **f16 on CUDA** — what ships: every layer drifts as much as candle's own
+  f16 build does (0.398 against 0.399 at the last decoder layer) or less.
+- **bf16 on CUDA**: 1.2–3x candle f16's drift, which is the three mantissa
+  bits bf16 gives up; the tokens still match. The deep-decoder drift in both
+  16-bit types comes from activations in the hundreds, not the port.
+- **f16 on ROCm** (AMD BC-250): 0.3995 at the last decoder layer, where candle's
+  f16 is at 0.399; the tokens match.
 - **f16 on Vulkan** (NVIDIA driver 610.57): at candle f16's drift through every
   layer, up to 2.9x it on a few decoding steps' logits; the tokens match.
 - **Metal**: not measured yet. CI builds and lints it on macOS, but it has not
   run on a Mac.
 
-CUDA and ROCm pick bf16 when the GPU can compute in it and f16 otherwise;
-Vulkan and Metal always take f16. SPIR-V allows bf16 only in conversions, dot
-products and cooperative matrices, never in arithmetic, but CubeCL compiles
-bf16 arithmetic anyway: some drivers compute garbage from it, and the NVIDIA
-one above segfaults in its SPIR-V compiler on the first such kernel. CubeCL's
-Metal backend offers no bf16 at all yet.
+Every accelerator runs in f16, and in f32 only on a device without it. f16 is
+the more faithful of the two 16-bit types here, and Voxtral does not need
+bf16's range. bf16 is also where CubeCL goes wrong:
+
+- **ROCm:** it compiles for AMD through LLVM, which it gives no bf16 type, so
+  every kernel using one fails to compile.
+- **Vulkan:** SPIR-V allows bf16 only in conversions, dot products and
+  cooperative matrices, but CubeCL compiles bf16 arithmetic anyway. Some
+  drivers compute garbage from it, and the NVIDIA one above segfaults in its
+  SPIR-V compiler.
+- **Metal:** CubeCL offers no bf16 at all.
+
+The checkpoints ship in bf16, so every load casts them, across all cores:
+burn-store's own cast, one element at a time, added 8 s to each load.
 
 ## License
 

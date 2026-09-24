@@ -103,37 +103,32 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
     )
 }
 
-/// The dtype the weights are cast to.
+/// The dtype the weights are cast to: f16 on every accelerator, and f32 on a
+/// device without it.
 ///
-/// On CUDA and ROCm, bf16 — the dtype the checkpoints ship in — when the device
-/// can compute in it, which halves the weights and their bandwidth. f16 is the
-/// next choice; it is also what the candle backend ran in, and the parity test
-/// measures the two as equally faithful.
+/// f16 halves the weights and their bandwidth, and it is the more faithful of
+/// the two 16-bit types here: the parity test puts it at candle's own f16
+/// drift through every layer, where bf16 — the dtype the checkpoints ship in —
+/// sits 1.2–3x above it, having three fewer mantissa bits. What bf16 buys
+/// instead is range, and Voxtral does not need it: its largest activations
+/// are in the hundreds, far inside f16's.
 ///
-/// On Vulkan and Metal, f16 and never bf16. SPIR-V's bf16 extension allows the
-/// type only in conversions, dot products and cooperative matrices, never in
-/// arithmetic, yet CubeCL compiles bf16 arithmetic whenever a driver reports
-/// the type. That code is invalid: some drivers compute garbage from it, and
-/// NVIDIA's 610.57 on an RTX 3090 segfaults in its SPIR-V compiler on the first
-/// kernel that does any, the tanh GELU after the encoder's first convolution.
-/// f16 transcribes there as it does on CUDA. CubeCL's Metal backend does not
-/// offer bf16 at all yet, so there f16 is the only 16-bit type; naming it keeps
-/// a bf16 nobody has measured from arriving with a CubeCL update.
+/// bf16 is also the type CubeCL gets wrong. For AMD it compiles through LLVM,
+/// which it gives no bf16 type, so every kernel that uses one fails to compile
+/// on any AMD card. SPIR-V allows bf16 only in conversions, dot products and
+/// cooperative matrices, yet CubeCL compiles bf16 arithmetic for Vulkan, which
+/// NVIDIA's 610.57 driver segfaults on. Its Metal backend offers no bf16 at
+/// all. `supports_dtype` reports bf16 as fine on the first two all the same.
 ///
-/// f32 is the last resort, for a device with neither: exact, but its weights
-/// alone are 19 GB, which a 24 GB card only runs through by retrying
-/// allocations that ran out of memory.
+/// f32 is the last resort: exact, but its weights alone are 19 GB, which a
+/// 24 GB card only runs through by retrying allocations that ran out of
+/// memory.
 pub fn model_dtype(device: &Device) -> DType {
-    let candidates: &[DType] = if matches!(BUILT_FOR, "vulkan" | "metal") {
-        &[DType::F16]
+    if device.supports_dtype(DType::F16) {
+        DType::F16
     } else {
-        &[DType::BF16, DType::F16]
-    };
-    candidates
-        .iter()
-        .copied()
-        .find(|&dtype| device.supports_dtype(dtype))
-        .unwrap_or(DType::F32)
+        DType::F32
+    }
 }
 
 /// Configure CubeCL: where it keeps compiled kernels, and which stream the
