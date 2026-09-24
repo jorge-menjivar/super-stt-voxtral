@@ -9,8 +9,8 @@
     version = "0.2.0"
     kind = "subprocess"
     entrypoint = "super-stt-backend-voxtral"
-    # v3: only a daemon that grants a kernel cache directory installs this
-    # build. Its kernels are compiled on the first load; a daemon without one
+    # v3: only a daemon that grants a kernel cache directory, Super STT 0.2.5
+    # and later, installs this build. Its kernels are compiled on the first load; a daemon without one
     # would compile them on every load, minutes each time. Generations are
     # additive, so v3 carries v2's required `id`, which also names the
     # install directory: the daemon moves an install from the old `voxtral`
