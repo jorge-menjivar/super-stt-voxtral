@@ -69,6 +69,11 @@ Burn hands each transcription's working memory back once it has replied, which
 is what keeps it idle at little more than its weights; the next request
 allocates it again, for about 50 ms.
 
+The Vulkan build on the same card (NVIDIA driver 610.57, f16) transcribes the
+same text: 0.82–0.86 s for the short clip and 1.78–1.86 s for the long one,
+8.8 GiB idle, and a load of 13.5 s with the kernel cache warm or 83 s the
+first time.
+
 The decoder's key/value caches are allocated up front and every decoding step
 attends to all of them through a mask, so every step runs the same kernels on
 the same shapes: a cache grown a token at a time gave CubeCL a new shape to
@@ -136,9 +141,13 @@ What it measured on this port, every tap against candle's f32:
 - **bf16 on CUDA** — what ships: 1.2–3x candle f16's drift, which is the three
   mantissa bits bf16 gives up; the tokens still match. The deep-decoder drift
   in both 16-bit types comes from activations in the hundreds, not the port.
+- **f16 on Vulkan** (NVIDIA driver 610.57): at candle f16's drift through every
+  layer, up to 2.9x it on a few decoding steps' logits; the tokens match.
 
-A GPU picks bf16 when it can compute in it and f16 otherwise: Vulkan often
-stores bf16 without any arithmetic on it.
+A GPU picks bf16 when it can compute in it and f16 otherwise, and the Vulkan
+build always takes f16. Vulkan drivers often store bf16 without any arithmetic
+on it, and the NVIDIA one above, which advertises the arithmetic, segfaults in
+its SPIR-V compiler building the first bf16 kernel.
 
 ## License
 

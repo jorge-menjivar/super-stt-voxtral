@@ -139,18 +139,30 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
 /// The dtype the weights are cast to.
 ///
 /// On a GPU, bf16 — the dtype the checkpoints ship in — when the device can
-/// compute in it, which halves the weights and their bandwidth. Not every
-/// device can: Vulkan often stores and converts bf16 without any arithmetic
-/// on it, and Burn computes garbage there rather than failing. f16 is the
+/// compute in it, which halves the weights and their bandwidth. f16 is the
 /// next choice; it is also what the candle backend ran in, and the parity
-/// test measures the two as equally faithful. On a CPU, f32: bf16 is slower
-/// there rather than faster.
+/// test measures the two as equally faithful.
+///
+/// Never bf16 on Vulkan. Drivers often store and convert it without any
+/// arithmetic on it, and Burn computes garbage there rather than failing;
+/// and one that does advertise the arithmetic, NVIDIA's 610.57 on an RTX
+/// 3090, segfaults in its SPIR-V compiler building the first bf16 kernels.
+/// f16 transcribes there as it does on CUDA, and f32 does not fit a 24 GB
+/// card.
+///
+/// On a CPU, f32: bf16 is slower there rather than faster.
 pub fn model_dtype(device: &Device) -> DType {
     if !ON_GPU {
         return DType::F32;
     }
-    [DType::BF16, DType::F16]
-        .into_iter()
+    let candidates: &[DType] = if cfg!(feature = "vulkan") {
+        &[DType::F16]
+    } else {
+        &[DType::BF16, DType::F16]
+    };
+    candidates
+        .iter()
+        .copied()
         .find(|&dtype| device.supports_dtype(dtype))
         .unwrap_or(DType::F32)
 }
