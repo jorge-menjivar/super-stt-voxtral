@@ -6,9 +6,10 @@
 # build fetches and compiles it, which is slow; nothing else about the build is
 # unusual and there is no C toolchain to install.
 #
-# Every recipe that builds for a GPU passes `--no-default-features` with one
-# accelerator named, matching the release workflow: features are additive, so
-# a build that kept the default `flex` alongside `cuda` would carry two
+# Every build carries one GPU accelerator; there is no CPU build. Vulkan is the
+# default, since it needs no SDK. The other recipes pass `--no-default-features`
+# with theirs named, matching the release workflow: features are additive, so a
+# build that kept the default `vulkan` alongside `cuda` would carry two
 # backends.
 
 parity_clip := justfile_directory() / "tests/data/jfk.wav"
@@ -21,7 +22,7 @@ default: build-release
 build-debug *args:
     cargo build {{ args }}
 
-# Compiles with release profile — the pure-Rust CPU backend.
+# Compiles with release profile — the Vulkan build, the default.
 # Usage: just build-release [args]
 build-release *args:
     cargo build --release --locked {{ args }}
@@ -40,6 +41,12 @@ build-rocm *args:
 build-vulkan *args:
     cargo build --release --locked --no-default-features --features vulkan {{ args }}
 
+# Build with Metal, on macOS. Needs nothing beyond the Xcode command-line
+# tools: wgpu reaches Metal through the system framework, and CubeCL compiles
+# the kernels to MSL at runtime.
+build-metal *args:
+    cargo build --release --locked --no-default-features --features metal {{ args }}
+
 # Build, then copy the binary to the entrypoint name `backend.toml` declares, so
 # this directory can be installed with the daemon's Import-from-dir path. Cargo
 # already names the artifact that, and the release workflow tarballs it under the
@@ -55,8 +62,9 @@ clean:
     cd parity && cargo clean
 
 # Runs a clippy check — mirrors super-stt's lint. Default features lint the
-# CPU build, which compiles every line of the backend's own code; the GPU
-# backends differ only in which Burn feature is on.
+# Vulkan build, which compiles every line of the backend's own code but the
+# other accelerators' arms of `select_device`; they differ only in which Burn
+# feature is on.
 check *args:
     cargo clippy --all-targets {{ args }} -- -W clippy::pedantic -D warnings -D unused_must_use
 
@@ -98,9 +106,11 @@ parity-reference:
     done
 
 # Compare the Burn port against candle layer by layer and print the table,
-# with candle's own f16 drift beside every row. `dtype` is the port's.
-# Usage: just parity [f32|f16|bf16] [--no-default-features --features cuda]
-parity dtype="f32" *args: parity-reference
+# with candle's own f16 drift beside every row. `dtype` is the port's: f16 by
+# default, which every accelerator runs; f32 is the strict check, and its 19 GB
+# of weights want a 24 GB card.
+# Usage: just parity [f16|bf16|f32] [--no-default-features --features cuda]
+parity dtype="f16" *args: parity-reference
     SUPER_STT_PARITY_REF="{{ parity_dir }}/candle-f32.safetensors" \
     SUPER_STT_PARITY_BASELINE="{{ parity_dir }}/candle-f16.safetensors" \
     SUPER_STT_PARITY_DTYPE={{ dtype }} \

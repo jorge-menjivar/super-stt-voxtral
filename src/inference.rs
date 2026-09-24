@@ -31,32 +31,28 @@ const INST_CLOSE: u32 = 4;
 /// `[TRANSCRIBE]`, which asks for a transcript rather than an answer.
 const TRANSCRIBE: u32 = 34;
 
+#[cfg(not(any(
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan",
+    feature = "metal"
+)))]
+compile_error!("build with one accelerator: `cuda`, `rocm`, `vulkan` or `metal`");
+
 /// The accelerator this build was compiled for, as the manifest names it.
 ///
 /// One build serves one accelerator: Burn's backends are cargo features, and
-/// the asset that carries this binary declares the matching `accel`.
+/// the asset that carries this binary declares the matching `accel`. Every one
+/// is a GPU; the models are too big for a CPU build to be worth shipping.
 const BUILT_FOR: &str = if cfg!(feature = "cuda") {
     "cuda"
 } else if cfg!(feature = "rocm") {
     "rocm"
 } else if cfg!(feature = "vulkan") {
     "vulkan"
-} else if cfg!(feature = "metal") {
-    "metal"
-} else if cfg!(feature = "wgpu") {
-    "wgpu"
 } else {
-    "cpu"
+    "metal"
 };
-
-/// Whether [`BUILT_FOR`] is a GPU, which decides the dtype.
-const ON_GPU: bool = cfg!(any(
-    feature = "cuda",
-    feature = "rocm",
-    feature = "vulkan",
-    feature = "metal",
-    feature = "wgpu"
-));
 
 /// The device this build runs on, and the name `GET /v1/status` reports.
 ///
@@ -82,83 +78,35 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
         Device::vulkan(burn::prelude::DeviceKind::DefaultDevice),
         "vulkan",
     );
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "rocm"),
-        not(feature = "vulkan"),
-        feature = "metal"
-    ))]
-    return (
+    #[cfg(all(not(feature = "cuda"), not(feature = "rocm"), not(feature = "vulkan")))]
+    (
         Device::metal(burn::prelude::DeviceKind::DefaultDevice),
         "metal",
-    );
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "rocm"),
-        not(feature = "vulkan"),
-        not(feature = "metal"),
-        feature = "wgpu"
-    ))]
-    return (
-        Device::wgpu(burn::prelude::DeviceKind::DefaultDevice),
-        "wgpu",
-    );
-    // Both CPU backends report `cpu`: they are one accelerator as far as the
-    // manifest and the daemon are concerned.
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "rocm"),
-        not(feature = "vulkan"),
-        not(feature = "metal"),
-        not(feature = "wgpu"),
-        feature = "cpu"
-    ))]
-    return (Device::cpu(), "cpu");
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "rocm"),
-        not(feature = "vulkan"),
-        not(feature = "metal"),
-        not(feature = "wgpu"),
-        not(feature = "cpu"),
-        feature = "flex"
-    ))]
-    return (Device::flex(), "cpu");
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "rocm"),
-        not(feature = "vulkan"),
-        not(feature = "metal"),
-        not(feature = "wgpu"),
-        not(feature = "cpu"),
-        not(feature = "flex")
-    ))]
-    (Device::default(), "cpu")
+    )
 }
 
 /// The dtype the weights are cast to.
 ///
-/// On a GPU, bf16 — the dtype the checkpoints ship in — when the device can
-/// compute in it, which halves the weights and their bandwidth. f16 is the
-/// next choice; it is also what the candle backend ran in, and the parity
-/// test measures the two as equally faithful.
+/// On CUDA and ROCm, bf16 — the dtype the checkpoints ship in — when the device
+/// can compute in it, which halves the weights and their bandwidth. f16 is the
+/// next choice; it is also what the candle backend ran in, and the parity test
+/// measures the two as equally faithful.
 ///
-/// Never bf16 on Vulkan. SPIR-V's bf16 extension allows the type only in
-/// conversions, dot products and cooperative matrices, never in arithmetic,
-/// yet CubeCL compiles bf16 arithmetic whenever a driver reports the type.
-/// That code is invalid: some drivers compute garbage from it, and NVIDIA's
-/// 610.57 on an RTX 3090 segfaults in its SPIR-V compiler on the first kernel
-/// that does any, the tanh GELU after the encoder's first convolution.
-/// f16 transcribes there as it does on CUDA. f32 is the next fallback: exact,
-/// but its weights alone are 19 GB, which a 24 GB card only runs through by
-/// retrying allocations that ran out of memory.
+/// On Vulkan and Metal, f16 and never bf16. SPIR-V's bf16 extension allows the
+/// type only in conversions, dot products and cooperative matrices, never in
+/// arithmetic, yet CubeCL compiles bf16 arithmetic whenever a driver reports
+/// the type. That code is invalid: some drivers compute garbage from it, and
+/// NVIDIA's 610.57 on an RTX 3090 segfaults in its SPIR-V compiler on the first
+/// kernel that does any, the tanh GELU after the encoder's first convolution.
+/// f16 transcribes there as it does on CUDA. CubeCL's Metal backend does not
+/// offer bf16 at all yet, so there f16 is the only 16-bit type; naming it keeps
+/// a bf16 nobody has measured from arriving with a CubeCL update.
 ///
-/// On a CPU, f32: bf16 is slower there rather than faster.
+/// f32 is the last resort, for a device with neither: exact, but its weights
+/// alone are 19 GB, which a 24 GB card only runs through by retrying
+/// allocations that ran out of memory.
 pub fn model_dtype(device: &Device) -> DType {
-    if !ON_GPU {
-        return DType::F32;
-    }
-    let candidates: &[DType] = if cfg!(feature = "vulkan") {
+    let candidates: &[DType] = if matches!(BUILT_FOR, "vulkan" | "metal") {
         &[DType::F16]
     } else {
         &[DType::BF16, DType::F16]
@@ -563,19 +511,16 @@ mod tests {
         );
     }
 
+    // Naming the device creates nothing, so these run without a GPU; asking
+    // it anything, the dtypes it supports included, would not.
     #[test]
     fn the_reported_accelerator_matches_the_compiled_backend() {
-        let (_, name) = select_device(None);
-        // `flex` and `cpu` are two CPU backends and both report "cpu".
-        assert_eq!(name, BUILT_FOR);
-        assert_eq!(ON_GPU, BUILT_FOR != "cpu");
-        let (device, _) = select_device(None);
-        assert_eq!(model_dtype(&device) == DType::F32, !ON_GPU);
+        assert_eq!(select_device(None).1, BUILT_FOR);
     }
 
     #[test]
     fn a_mismatched_device_request_still_uses_the_compiled_backend() {
-        let other = if BUILT_FOR == "cpu" { "cuda" } else { "cpu" };
+        let other = if BUILT_FOR == "cuda" { "rocm" } else { "cuda" };
         assert_eq!(select_device(Some(other)).1, BUILT_FOR);
         assert_eq!(select_device(Some("")).1, BUILT_FOR);
     }

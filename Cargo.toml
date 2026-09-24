@@ -65,18 +65,17 @@
     # `ServiceExt::oneshot` for in-process router/handler tests.
     tower = { version = "0.5", features = ["util"] }
 
-# One accelerator per build, as the asset it ships in declares. `flex` is the
-# default because it is the one that runs anywhere: a pure-Rust CPU backend
-# with nothing to detect and no driver to find.
+# One accelerator per build, as the asset it ships in declares, and every one
+# of them a GPU: the models are too big for a CPU build to be worth shipping,
+# Voxtral Mini's weights alone being 8.7 GiB in bf16. `vulkan` is the default
+# because it is the one that builds anywhere: no SDK, and the loader is found
+# at runtime.
 [features]
-    default = ["flex"]
-    cpu = ["burn/cpu"]
+    default = ["vulkan"]
     cuda = ["burn/cuda"]
-    flex = ["burn/flex"]
     metal = ["burn/metal"]
     rocm = ["burn/rocm"]
     vulkan = ["burn/vulkan"]
-    wgpu = ["burn/wgpu"]
 
 # The CubeCL the Burn fork's `qwen3-tts` branch builds against: the pinned
 # upstream revision plus its `compilation-cache-default` branch. A `[patch]` in
@@ -84,9 +83,8 @@
 # patches come from the root of the crate being built — so this backend has to
 # repeat it, or it would build a different CubeCL than the fork was measured
 # on. It keeps compiled kernels across runs by default, coalesces the sliced
-# memory pool's free slices lazily, lets the channel server take a partial
-# batch when its producer pauses, and has the CPU runtime copy a read out of
-# the live buffer instead of handing back a view of it.
+# memory pool's free slices lazily, and lets the channel server take a partial
+# batch when its producer pauses.
 [patch."https://github.com/tracel-ai/cubecl"]
     cubecl = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
     cubecl-common = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }

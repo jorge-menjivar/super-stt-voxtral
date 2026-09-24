@@ -19,9 +19,11 @@ from the app — see the [Super STT docs](https://github.com/jorge-menjivar/supe
 
 ## Models
 
-Two models, chosen by `name` when Super STT loads the backend. Both want a GPU
-— NVIDIA through CUDA, AMD through ROCm, or anything else through Vulkan; the
-weights are pulled from Hugging Face on first load.
+Two models, chosen by `name` when Super STT loads the backend. Both need a GPU
+— NVIDIA through CUDA, AMD through ROCm, Apple Silicon through Metal, or
+anything else through Vulkan. There is no CPU build: the models are too big for
+one to be worth shipping. The weights are pulled from Hugging Face on first
+load.
 
 | Model (`name`)           | Upstream model                                                               | ~VRAM  |
 | ------------------------ | ---------------------------------------------------------------------------- | ------ |
@@ -36,8 +38,8 @@ code with the Super STT project.
 
 The model runs on [Burn](https://github.com/tracel-ai/burn). Its GPU kernels are
 compiled at runtime by CubeCL, so one binary per accelerator covers every GPU
-generation the driver can compile for — which is also what reaches ROCm and
-Vulkan. The port lives in `src/voxtral`:
+generation the driver can compile for — which is also what reaches ROCm,
+Vulkan and Metal. The port lives in `src/voxtral`:
 
 | Path | What it holds |
 |---|---|
@@ -99,16 +101,16 @@ Most people never need to — Super STT downloads prebuilt releases. For
 development (requires [`just`](https://github.com/casey/just)):
 
 ```bash
-just build-release   # the pure-Rust CPU backend
+just build-vulkan    # the default; needs nothing, the loader is found at runtime
 just build-cuda      # needs the CUDA headers — no GPU, no compute capability
 just build-rocm      # needs the ROCm headers
-just build-vulkan    # needs nothing; the loader is found at runtime
+just build-metal     # on macOS; needs only the Xcode command-line tools
 just ci              # format, lint, build, and test
 ```
 
-Each build carries exactly one accelerator, which is why the GPU recipes pass
+Each build carries exactly one accelerator, which is why the recipes pass
 `--no-default-features`: cargo features are additive, so `--features cuda` alone
-would keep the default CPU backend too.
+would keep the default Vulkan backend too.
 
 **Burn comes from a fork.** `Cargo.toml` pins `jorge-menjivar/burn` on the
 branch the Qwen TTS backend builds on, which carries fixes to Burn's fusion
@@ -128,14 +130,15 @@ and the cosine distance:
 
 ```bash
 export SUPER_STT_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
-just parity                                              # CPU, f32
-just parity bf16 --no-default-features --features cuda   # GPU, bf16
+just parity                                              # Vulkan, f16
+just parity bf16 --no-default-features --features cuda   # CUDA, bf16
 ```
 
 What it measured on this port, every tap against candle's f32:
 
-- **f32 on the CPU**: the features are bit-identical, every layer is within
-  7e-4 relative error, and the tokens match. The test holds it to 1e-3.
+- **f32 on the CPU**, the build the port was first checked on and has since
+  dropped: the features are bit-identical, every layer is within 7e-4
+  relative error, and the tokens match.
 - **f16 on CUDA**: every layer drifts as much as candle's own f16 build does
   (0.398 against 0.399 at the last decoder layer) or less.
 - **bf16 on CUDA** — what ships: 1.2–3x candle f16's drift, which is the three
@@ -143,12 +146,15 @@ What it measured on this port, every tap against candle's f32:
   in both 16-bit types comes from activations in the hundreds, not the port.
 - **f16 on Vulkan** (NVIDIA driver 610.57): at candle f16's drift through every
   layer, up to 2.9x it on a few decoding steps' logits; the tokens match.
+- **Metal**: not measured yet. CI builds and lints it on macOS, but it has not
+  run on a Mac.
 
-A GPU picks bf16 when it can compute in it and f16 otherwise, and the Vulkan
-build always takes f16. SPIR-V allows bf16 only in conversions, dot products
-and cooperative matrices, never in arithmetic, but CubeCL compiles bf16
-arithmetic anyway: some drivers compute garbage from it, and the NVIDIA one
-above segfaults in its SPIR-V compiler on the first such kernel.
+CUDA and ROCm pick bf16 when the GPU can compute in it and f16 otherwise;
+Vulkan and Metal always take f16. SPIR-V allows bf16 only in conversions, dot
+products and cooperative matrices, never in arithmetic, but CubeCL compiles
+bf16 arithmetic anyway: some drivers compute garbage from it, and the NVIDIA
+one above segfaults in its SPIR-V compiler on the first such kernel. CubeCL's
+Metal backend offers no bf16 at all yet.
 
 ## License
 

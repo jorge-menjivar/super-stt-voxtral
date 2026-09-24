@@ -20,17 +20,14 @@
 # assets and pins their hashes. The archives hold the binary at their root,
 # which is where `entrypoint` above says to find it.
 #
-# One build per (target, accelerator). There is no compute-capability axis:
-# Burn compiles every kernel at runtime through CubeCL — NVRTC on CUDA, hiprtc
-# on ROCm, SPIR-V on Vulkan — so one CUDA build serves every NVIDIA generation
-# the installed driver can compile for, where candle's ahead-of-time build
-# needed one asset per SM. What is left is the CUDA major version, which
-# decides the API the binary was built against.
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cpu.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cpu"
+# One build per (target, accelerator), and every accelerator a GPU: the models
+# are too big for a CPU build to be worth shipping. There is no
+# compute-capability axis: Burn compiles every kernel at runtime through
+# CubeCL — NVRTC on CUDA, hiprtc on ROCm, SPIR-V on Vulkan, MSL on Metal — so
+# one CUDA build serves every NVIDIA generation the installed driver can
+# compile for, where candle's ahead-of-time build needed one asset per SM. What
+# is left is the CUDA major version, which decides the API the binary was
+# built against.
 
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
@@ -76,10 +73,13 @@
     accel = "vulkan"
     vulkan_api = "1.2"
 
+# macOS on Apple Silicon. Metal compiles its kernels at runtime like the other
+# GPU builds, so it has nothing to select on beyond the target. The GPU shares
+# the system's memory there, so the models' `estimated_vram_bytes` is RAM.
 [[assets.subprocess]]
-    file = "voxtral-aarch64-unknown-linux-gnu-cpu.tar.gz"
-    target = "aarch64-unknown-linux-gnu"
-    accel = "cpu"
+    file = "voxtral-aarch64-apple-darwin-metal.tar.gz"
+    target = "aarch64-apple-darwin"
+    accel = "metal"
 
 [[models]]
     name = "voxtral-mini-3b-2507"

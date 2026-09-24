@@ -85,11 +85,41 @@ jobs:
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
 
       # Gates the build: `just check` runs clippy with `-D warnings`, so any lint
-      # fails CI. Default (CPU, `flex`) features — the accelerators are
-      # mutually exclusive Burn features, and `--all-features` would also pull
-      # in the CUDA and ROCm bindings, whose headers the hosted runner lacks.
+      # fails CI. Default features, the Vulkan build, which needs no SDK — the
+      # accelerators are mutually exclusive Burn features, and `--all-features`
+      # would also pull in the CUDA and ROCm bindings, whose headers the hosted
+      # runner lacks.
       - name: Run clippy
         run: just check
+
+  # The Metal build only compiles on macOS, and nothing else here reaches its
+  # arm of the device selection.
+  clippy-metal:
+    name: Clippy (Metal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-metal-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run clippy
+        run: just check --no-default-features --features metal
 
   coverage:
     name: Coverage
@@ -114,7 +144,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-llvmcov-${{ hashFiles('**/Cargo.lock') }}
 
-      # CPU-only: covers the protocol/handler/inference unit tests. The model
+      # No GPU here: covers the protocol/handler/inference unit tests. The model
       # load + ML decode path is GPU/weights-gated (the `transcribe_e2e` test,
       # which self-skips here), so it is intentionally not counted.
       - name: Coverage (lcov + summary)
@@ -163,7 +193,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-llvmcov-${{ hashFiles('**/Cargo.lock') }}
 
-      # Same CPU-only scope as the lcov job: renders the static report to
+      # Same GPU-less scope as the lcov job: renders the static report to
       # target/llvm-cov/html/ (the GPU/weights-gated decode path self-skips).
       - name: Generate HTML coverage report
         run: just coverage --html

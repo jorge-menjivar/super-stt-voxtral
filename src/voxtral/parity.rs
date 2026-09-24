@@ -15,13 +15,12 @@
 //! `SUPER_STT_PARITY_DTYPE` picks the port's dtype, `f32` by default. What is
 //! held depends on it:
 //!
-//! - f32 on the CPU is the same arithmetic as candle's in a different order,
-//!   and every layer is held within 1e-3 of it (measured: 7e-4 at worst, deep
-//!   in the decoder);
 //! - f32 on a GPU is not quite f32: the first convolution already sits 2e-4
 //!   from candle's, about where TF32 tensor cores would put it, and the error
-//!   compounds from there — so it is held to the baseline below instead: no
-//!   layer may drift further than candle's own f16 does;
+//!   compounds from there — so it is held to the baseline below: no layer may
+//!   drift further than candle's own f16 does. (The CPU build the port was
+//!   first checked on, since dropped, did candle's arithmetic in a different
+//!   order and sat within 7e-4 of it at every layer.)
 //! - in f16 and bf16 the table is the measurement.
 //!
 //! The greedy tokens must match candle's in every case.
@@ -241,12 +240,6 @@ fn layers_match_candle() {
         + tokens.len();
     assert_eq!(compared, expected, "a tap is missing from one side");
     assert_eq!(ours, tokens, "greedy decoding diverged from candle's");
-    if strict && device_name == "cpu" {
-        assert!(
-            worst_rel < 1e-3,
-            "in f32 every layer should be within 1e-3 of candle's, the worst is {worst_rel:.3e}"
-        );
-    }
     if strict {
         assert!(
             past_baseline.is_empty(),

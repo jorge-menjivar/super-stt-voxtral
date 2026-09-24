@@ -465,7 +465,7 @@ mod tests {
         // The handler sets the model name before spawning the load task, and the
         // error path leaves it intact — so it's readable right after the 202.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" }))
             .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(
@@ -507,7 +507,7 @@ mod tests {
     async fn load_missing_weights_transitions_to_error() {
         // backend_dir is a temp dir with no models/, so the load fails fast.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" }))
             .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(

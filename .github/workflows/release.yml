@@ -19,30 +19,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # One build per (target, accelerator). CubeCL compiles kernels at
-          # runtime, so there is no compute-capability axis: what used to be
-          # twelve CUDA builds is two, one per CUDA major version.
+          # One build per (target, accelerator), and every accelerator a GPU:
+          # the models are too big for a CPU build to be worth shipping.
+          # CubeCL compiles kernels at runtime, so there is no
+          # compute-capability axis: what used to be twelve CUDA builds is two,
+          # one per CUDA major version.
           #
           # `features` is passed with `--no-default-features`, so each build
           # carries exactly one backend rather than its own plus the default
-          # `flex`.
+          # `vulkan`.
           #
-          # Every build links against Ubuntu 22.04's glibc, 2.35, so every
-          # asset starts on the same hosts. A build with an `image` runs
+          # Every Linux build links against Ubuntu 22.04's glibc, 2.35, so
+          # every asset starts on the same hosts. A build with an `image` runs
           # through cross inside it; the rest build natively on a 22.04 runner.
           # cross's own default images are not an option: since May 2026 they
           # are Ubuntu 24.04, and std's weak reference to `pidfd_spawnp` picks
           # up that glibc's version, so a binary that spawns a process at all
-          # demands 2.39 and will not start on 22.04 or Debian 12.
-
-          # CPU (x86_64) — the pure-Rust backend, which runs anywhere.
-          - {
-              os: ubuntu-22.04,
-              target: x86_64-unknown-linux-gnu,
-              suffix: cpu,
-              features: flex,
-              image: "",
-            }
+          # demands 2.39 and will not start on 22.04 or Debian 12. macOS
+          # builds natively too: cross has no Apple SDK to offer.
 
           # CUDA. Built inside the nvidia/cuda devel image via cross's image
           # override: `cudarc` asks `nvcc --version` which CUDA API to bind, so
@@ -83,6 +77,7 @@ jobs:
             }
 
           # Vulkan: no SDK needed to build, the loader is found at runtime.
+          # x86_64 only, until there is an ARM runner to test it on.
           - {
               os: ubuntu-22.04,
               target: x86_64-unknown-linux-gnu,
@@ -91,14 +86,15 @@ jobs:
               image: "",
             }
 
-          # CPU (aarch64), built natively on an arm64 runner. No CUDA or ROCm
-          # on ARM here, and Vulkan is left out until there is a runner to test
-          # it on.
+          # Metal, on Apple Silicon only: macOS 26 is the last release for
+          # Intel Macs. Nothing to install: wgpu reaches Metal through the
+          # system framework, and CubeCL compiles its kernels to MSL at
+          # runtime, so as with CUDA there is no per-GPU axis.
           - {
-              os: ubuntu-22.04-arm,
-              target: aarch64-unknown-linux-gnu,
-              suffix: cpu,
-              features: flex,
+              os: macos-latest,
+              target: aarch64-apple-darwin,
+              suffix: metal,
+              features: metal,
               image: "",
             }
 
