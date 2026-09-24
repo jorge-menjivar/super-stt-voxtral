@@ -14,7 +14,7 @@ mod inference;
 mod voxtral;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context;
 use axum::Json;
@@ -211,12 +211,27 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
     let device = req.device;
     let s2 = Arc::clone(&s);
     tokio::spawn(async move {
-        let res =
-            tokio::task::spawn_blocking(move || VoxtralEngine::load(&dir, device.as_deref())).await;
+        let s3 = Arc::clone(&s2);
+        // Everything that can panic runs in the blocking task, whose panic
+        // comes back as an error below. A panic in this task itself would end
+        // it with the status stuck at `loading`.
+        let res = tokio::task::spawn_blocking(move || {
+            // A transcription that panicked while holding the engine poisoned
+            // the lock; a load replaces that engine all the same, and clears
+            // the poison once it has.
+            let mut engine = s3.engine.lock().unwrap_or_else(PoisonError::into_inner);
+            // The previous model goes first, so its memory is back before the
+            // new one asks for any.
+            *engine = None;
+            s3.engine.clear_poison();
+            let loaded = VoxtralEngine::load(&dir, device.as_deref())?;
+            let label = loaded.device_label().to_string();
+            *engine = Some(loaded);
+            anyhow::Ok(label)
+        })
+        .await;
         match res {
-            Ok(Ok(engine)) => {
-                let label = engine.device_label().to_string();
-                *s2.engine.lock().unwrap() = Some(engine);
+            Ok(Ok(label)) => {
                 let mut st = s2.status.lock().unwrap();
                 st.device = Some(label);
                 st.state = LoadState::Ready;
@@ -501,6 +516,39 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(resp).await["message"], "invalid_audio");
+    }
+
+    #[tokio::test]
+    async fn load_after_a_poisoned_engine_still_finishes() {
+        // A transcription that panicked under the engine lock poisons it. The
+        // next load must still reach a final state, and leave the lock usable.
+        let state = test_state();
+        let s2 = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = s2.engine.lock().unwrap();
+            panic!("a transcription panicking under the lock");
+        })
+        .join();
+        assert!(state.engine.is_poisoned());
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507" })).unwrap();
+        let resp = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/v1/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        for _ in 0..250 {
+            if matches!(state.status.lock().unwrap().state, LoadState::Error) {
+                assert!(!state.engine.is_poisoned());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("load did not reach error state");
     }
 
     #[tokio::test]
