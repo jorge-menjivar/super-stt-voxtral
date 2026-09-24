@@ -1,113 +1,92 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #:schema https://jorge-menjivar.github.io/super-stt/backend.schema.json
-# Voxtral (local, GPU) subprocess backend. See docs/protocol/backend/.
+# Voxtral (local, GPU) subprocess backend, on Burn. See docs/protocol/backend/.
 
 [backend]
+    id = "app.super-stt.voxtral"
     source = "github.com/jorge-menjivar/super-stt-voxtral"
     name = "Voxtral"
-    version = "0.1.1"
+    version = "0.2.0"
     kind = "subprocess"
     entrypoint = "super-stt-backend-voxtral"
-    contract = "v1"
+    # v3: only a daemon that grants a kernel cache directory, Super STT 0.2.5
+    # and later, installs this build. Its kernels are compiled on the first load; a daemon without one
+    # would compile them on every load, minutes each time. Generations are
+    # additive, so v3 carries v2's required `id`, which also names the
+    # install directory: the daemon moves an install from the old `voxtral`
+    # directory, weights included, rather than downloading it again.
+    contract = "v3"
     license = "GPL-3.0-only"
     description = "Local Voxtral speech-to-text."
 
 [network]
     allowed_hosts = []
 
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cpu.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cpu"
+# One entry per tarball `.github/workflows/release.yml` builds — the filenames
+# must match it exactly, since the indexer resolves them against the release's
+# assets and pins their hashes. The archives hold the binary at their root,
+# which is where `entrypoint` above says to find it.
+#
+# One build per (target, accelerator), and every accelerator a GPU: the models
+# are too big for a CPU build to be worth shipping. There is no
+# compute-capability axis: Burn compiles every kernel at runtime through
+# CubeCL — NVRTC on CUDA, hiprtc on ROCm, SPIR-V on Vulkan, MSL on Metal — so
+# one CUDA build serves every NVIDIA generation the installed driver can
+# compile for, where candle's ahead-of-time build needed one asset per SM. What
+# is left is the CUDA major version, which decides the API the binary was
+# built against.
 
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda12-sm75.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 12
-    cuda_sm = 75
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda12-sm80.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 12
-    cuda_sm = 80
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda12-sm86.tar.gz"
+    file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
     target = "x86_64-unknown-linux-gnu"
     accel = "cuda"
     cuda_major = 12
-    cuda_sm = 86
+    # No `cuda_sm`: the kernels are compiled on the host by NVRTC, so this
+    # build matches any compute capability, which is what omitting it declares.
 
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda12-sm89.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 12
-    cuda_sm = 89
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda12-sm90.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 12
-    cuda_sm = 90
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm75.tar.gz"
+    file = "voxtral-x86_64-unknown-linux-gnu-cuda13.tar.gz"
     target = "x86_64-unknown-linux-gnu"
     accel = "cuda"
     cuda_major = 13
-    cuda_sm = 75
 
+# AMD. The kernels are compiled at runtime here too, so this list is not the
+# set of architectures the binary carries code for — it is the set the backend
+# is claimed to work on, which the schema requires to be explicit because an
+# ahead-of-time HIP build could not honestly claim more. RDNA2 through RDNA4
+# and the CDNA parts; a card outside it will usually work and is simply not
+# advertised.
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm80.tar.gz"
+    file = "voxtral-x86_64-unknown-linux-gnu-rocm.tar.gz"
     target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 80
+    accel = "rocm"
+    gfx = [
+        "gfx90a",
+        "gfx942",
+        "gfx1030",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1200",
+        "gfx1201",
+    ]
 
+# The vendor-neutral GPU path: Intel, an AMD card on the Mesa driver, an NVIDIA
+# card without CUDA installed. Slower than the native backends, and ranked
+# below them by the daemon, but it is the only GPU some hosts have.
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm86.tar.gz"
+    file = "voxtral-x86_64-unknown-linux-gnu-vulkan.tar.gz"
     target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 86
+    accel = "vulkan"
+    vulkan_api = "1.2"
 
+# macOS on Apple Silicon. Metal compiles its kernels at runtime like the other
+# GPU builds, so it has nothing to select on beyond the target. The GPU shares
+# the system's memory there, so the models' `estimated_vram_bytes` is RAM.
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm89.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 89
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm90.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 90
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm100.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 100
-
-[[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-cuda13-sm120.tar.gz"
-    target = "x86_64-unknown-linux-gnu"
-    accel = "cuda"
-    cuda_major = 13
-    cuda_sm = 120
-
-[[assets.subprocess]]
-    file = "voxtral-aarch64-unknown-linux-gnu-cpu.tar.gz"
-    target = "aarch64-unknown-linux-gnu"
-    accel = "cpu"
+    file = "voxtral-aarch64-apple-darwin-metal.tar.gz"
+    target = "aarch64-apple-darwin"
+    accel = "metal"
 
 [[models]]
     name = "voxtral-mini-3b-2507"
@@ -115,8 +94,14 @@
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
-    supported_devices = ["cuda"]
-    estimated_vram_bytes = 8589934592
+    supported_devices = ["gpu"]
+    # Measured on an RTX 3090 in f16: 9.0 GiB resident while idle, 8.7 GiB of
+    # it weights; a transcription takes it to about 11.3 GiB with the key/value
+    # caches and activations, handed back after each one. The first load on a
+    # machine peaks near 16.2 GiB for a minute or two while CubeCL tunes its
+    # kernels, then settles back; later loads read the tuning from the kernel
+    # cache and never reach it.
+    estimated_vram_bytes = 12884901888
     processing_interval_ms = 2000
 
     files = [
@@ -132,7 +117,7 @@
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
-    supported_devices = ["cuda"]
+    supported_devices = ["gpu"]
     estimated_vram_bytes = 55834574848
     processing_interval_ms = 2000
 

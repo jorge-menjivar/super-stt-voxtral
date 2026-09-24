@@ -2,14 +2,20 @@
 //! Voxtral subprocess backend: serves the Super STT `/v1` contract over a
 //! pathname Unix socket (`SUPER_STT_BACKEND_SOCKET`), loading the model from
 //! `SUPER_STT_BACKEND_DIR/models/<name>`. Self-contained — no super-stt deps.
+//!
+//! The model runs on Burn, whose GPU kernels CubeCL compiles at runtime and
+//! keeps in `SUPER_STT_BACKEND_CACHE_DIR` — the one writable directory a
+//! daemon new enough to grant it provides.
 
 // doc lint trips on prose like "candle"/"super-stt".
 #![allow(clippy::doc_markdown)]
 
 mod inference;
+mod progress;
+mod voxtral;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context;
 use axum::Json;
@@ -25,6 +31,7 @@ use serde_json::{Value, json};
 use tokio::net::UnixListener;
 
 use inference::VoxtralEngine;
+use progress::Report;
 
 /// This backend implements exactly one provider (the model routing class every
 /// one of its models declares). A `/v1/load` naming any other provider is
@@ -55,6 +62,8 @@ struct Status {
     model: Option<String>,
     device: Option<String>,
     reason: Option<String>,
+    /// How far a load has got; reported only while `state` is `loading`.
+    load: Report,
 }
 
 impl Default for Status {
@@ -64,6 +73,7 @@ impl Default for Status {
             model: None,
             device: None,
             reason: None,
+            load: Report::default(),
         }
     }
 }
@@ -74,9 +84,32 @@ struct AppState {
     engine: Mutex<Option<VoxtralEngine>>,
 }
 
+/// Names the one writable directory the sandbox grants, where the compiled
+/// kernels go. Absent when the daemon grants none.
+const ENV_CACHE_DIR: &str = "SUPER_STT_BACKEND_CACHE_DIR";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // CubeCL's ROCm compiler logs its whole IR after every pass at `info`,
+    // gigabytes over one warm-up, and the daemon runs backends at `info`. So
+    // it starts at `warn`, which `RUST_LOG` can still raise by naming it.
+    env_logger::Builder::new()
+        .filter_module("pliron", log::LevelFilter::Warn)
+        .parse_env(env_logger::Env::default().default_filter_or("info"))
+        .init();
+
+    // Before anything touches a device: CubeCL's configuration, which says
+    // where compiled kernels are kept and which stream work runs on, is frozen
+    // the first time it is read.
+    let cache_dir = std::env::var_os(ENV_CACHE_DIR).map(PathBuf::from);
+    match &cache_dir {
+        Some(dir) => log::info!("keeping compiled kernels in {}", dir.display()),
+        None => log::warn!(
+            "{ENV_CACHE_DIR} is not set, so the GPU kernels have nowhere to be kept and are \
+             recompiled on every load"
+        ),
+    }
+    inference::configure_cubecl(cache_dir.as_deref());
 
     let socket = std::env::var("SUPER_STT_BACKEND_SOCKET")
         .context("SUPER_STT_BACKEND_SOCKET must be set")?;
@@ -146,6 +179,17 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     if let Some(r) = &st.reason {
         out["reason"] = json!(r);
     }
+    if matches!(st.state, LoadState::Loading) {
+        if let Some(phase) = st.load.phase {
+            out["phase"] = json!(phase.as_str());
+        }
+        if let Some(step) = st.load.step {
+            out["step"] = json!(step.as_str());
+        }
+        if let Some(progress) = st.load.progress {
+            out["progress"] = json!(progress);
+        }
+    }
     Json(out)
 }
 
@@ -184,16 +228,39 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
         st.model = Some(req.name.clone());
         st.device = None;
         st.reason = None;
+        st.load = Report::default();
     }
     let dir = s.backend_dir.join("models").join(&req.name);
-    let force_cpu = req.device.as_deref() == Some("cpu");
+    let device = req.device;
     let s2 = Arc::clone(&s);
     tokio::spawn(async move {
-        let res = tokio::task::spawn_blocking(move || VoxtralEngine::load(&dir, force_cpu)).await;
+        let s3 = Arc::clone(&s2);
+        // Everything that can panic runs in the blocking task, whose panic
+        // comes back as an error below. A panic in this task itself would end
+        // it with the status stuck at `loading`.
+        let res = tokio::task::spawn_blocking(move || {
+            // A transcription that panicked while holding the engine poisoned
+            // the lock; a load replaces that engine all the same, and clears
+            // the poison once it has.
+            let mut engine = s3.engine.lock().unwrap_or_else(PoisonError::into_inner);
+            // The previous model goes first, so its memory is back before the
+            // new one asks for any.
+            *engine = None;
+            s3.engine.clear_poison();
+            let report = |load: Report| {
+                let mut st = s3.status.lock().unwrap_or_else(PoisonError::into_inner);
+                if matches!(st.state, LoadState::Loading) {
+                    st.load = load;
+                }
+            };
+            let loaded = VoxtralEngine::load(&dir, device.as_deref(), &report)?;
+            let label = loaded.device_label().to_string();
+            *engine = Some(loaded);
+            anyhow::Ok(label)
+        })
+        .await;
         match res {
-            Ok(Ok(engine)) => {
-                let label = engine.device_label().to_string();
-                *s2.engine.lock().unwrap() = Some(engine);
+            Ok(Ok(label)) => {
                 let mut st = s2.status.lock().unwrap();
                 st.device = Some(label);
                 st.state = LoadState::Ready;
@@ -251,14 +318,29 @@ async fn transcribe(
     let audio = req.audio_data;
     let language = req.language;
     let s2 = Arc::clone(&s);
-    let result = tokio::task::spawn_blocking(move || {
+    // The reply goes out before the engine hands its working memory back, which
+    // the caller has no reason to wait for. The lock is held until that is done,
+    // so a request arriving meanwhile waits for it rather than racing it.
+    let (reply, replied) = tokio::sync::oneshot::channel();
+    let worker = tokio::task::spawn_blocking(move || {
         let mut guard = s2.engine.lock().unwrap();
-        let engine = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("engine not loaded"))?;
-        engine.transcribe(&audio, sample_rate, language.as_deref())
-    })
-    .await;
+        let Some(engine) = guard.as_mut() else {
+            let _ = reply.send(Err(anyhow::anyhow!("engine not loaded")));
+            return;
+        };
+        // Released whether or not the transcription failed: a failed request's
+        // memory is just as dead.
+        let _ = reply.send(engine.transcribe(&audio, sample_rate, language.as_deref()));
+        engine.release_memory();
+    });
+    let result = match replied.await {
+        Ok(result) => Ok(result),
+        // The reply was dropped unsent, which only a panic does: the join
+        // error carries it.
+        Err(_) => worker
+            .await
+            .map(|()| Err(anyhow::anyhow!("the transcription ended without a reply"))),
+    };
     match result {
         Ok(Ok(text)) => (
             StatusCode::OK,
@@ -387,6 +469,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_reports_load_progress_only_while_loading() {
+        let state = test_state();
+        {
+            let mut st = state.status.lock().unwrap();
+            st.state = LoadState::Loading;
+            st.load = Report {
+                phase: Some(progress::Phase::InitialSetup),
+                step: Some(progress::Step::BuildingKernels),
+                progress: Some(0.5),
+            };
+        }
+        let get = || Request::get("/v1/status").body(Body::empty()).unwrap();
+        let v = json_body(router(Arc::clone(&state)).oneshot(get()).await.unwrap()).await;
+        assert_eq!(v["state"], "loading");
+        assert_eq!(v["phase"], "initial_setup");
+        assert_eq!(v["step"], "building_kernels");
+        assert_eq!(v["progress"], 0.5);
+
+        state.status.lock().unwrap().state = LoadState::Ready;
+        let v = json_body(router(state).oneshot(get()).await.unwrap()).await;
+        for field in ["phase", "step", "progress"] {
+            assert!(v.get(field).is_none(), "{field} outside a load: {v}");
+        }
+    }
+
+    #[tokio::test]
     async fn load_rejects_mismatched_provider() {
         let body =
             serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "provider": "openai" }))
@@ -427,7 +535,7 @@ mod tests {
         // The handler sets the model name before spawning the load task, and the
         // error path leaves it intact — so it's readable right after the 202.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" }))
             .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(
@@ -466,10 +574,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_after_a_poisoned_engine_still_finishes() {
+        // A transcription that panicked under the engine lock poisons it. The
+        // next load must still reach a final state, and leave the lock usable.
+        let state = test_state();
+        let s2 = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = s2.engine.lock().unwrap();
+            panic!("a transcription panicking under the lock");
+        })
+        .join();
+        assert!(state.engine.is_poisoned());
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507" })).unwrap();
+        let resp = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/v1/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        for _ in 0..250 {
+            if matches!(state.status.lock().unwrap().state, LoadState::Error) {
+                assert!(!state.engine.is_poisoned());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("load did not reach error state");
+    }
+
+    #[tokio::test]
     async fn load_missing_weights_transitions_to_error() {
         // backend_dir is a temp dir with no models/, so the load fails fast.
         let state = test_state();
-        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cpu" }))
+        let body = serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" }))
             .unwrap();
         let resp = router(Arc::clone(&state))
             .oneshot(

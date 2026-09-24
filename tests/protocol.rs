@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Mock-daemon protocol test against the real binary with NO model provisioned.
 //! Verifies the `/v1` HTTP surface, the pre-load `starting` state, and a
-//! graceful load-error path. CPU-only — runs in CI.
+//! graceful load-error path. Needs no GPU, since the load fails on the missing
+//! weights before it touches the device — runs in CI.
 
 mod common;
 use common::Backend;
@@ -29,7 +30,7 @@ async fn load_without_weights_reports_error() {
     let dir = tempfile::tempdir().unwrap(); // no models/ subdir
     let backend = Backend::spawn(dir.path()).await;
 
-    assert_eq!(backend.load("voxtral-mini-3b-2507", "cpu").await, 202);
+    assert_eq!(backend.load("voxtral-mini-3b-2507", "cuda").await, 202);
 
     // Weights dir is missing → the engine load fails → state becomes `error`.
     let s = backend

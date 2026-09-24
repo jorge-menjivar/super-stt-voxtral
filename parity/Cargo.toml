@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# The candle reference for the layer-by-layer parity check of the Burn port.
+#
+# Not part of the backend: its own workspace and its own Cargo.lock, so candle
+# never enters the backend's dependency graph. It runs candle's Voxtral — the
+# implementation this backend shipped on before the port — over one clip and
+# writes every layer's output to a safetensors file, which the backend's
+# `voxtral::parity` test then compares against its own. See `just parity`.
+
+[package]
+    name = "voxtral-candle-reference"
+    version = "0.0.0"
+    edition = "2024"
+    license = "GPL-3.0-only"
+    publish = false
+
+[workspace]
+
+[dependencies]
+    anyhow = "1"
+    # The revision the backend pinned before the port, so the reference is the
+    # code that was actually shipped.
+    candle-core = {
+        git = "https://github.com/jorge-menjivar/candle.git",
+        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
+    }
+    candle-nn = {
+        git = "https://github.com/jorge-menjivar/candle.git",
+        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
+    }
+    candle-transformers = {
+        git = "https://github.com/jorge-menjivar/candle.git",
+        rev = "eef47d5df512eefcba05a4eb7f3716ea2088287b"
+    }
+    hound = "3.5"
+    serde_json = "1"
+    tekken = { version = "0.2.0", default-features = false, features = ["audio"] }
+
+[features]
+    cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
