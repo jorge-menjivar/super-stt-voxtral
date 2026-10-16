@@ -71,7 +71,6 @@
 
 [[models]]
     name = "voxtral-mini-3b-2507"
-    provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
@@ -88,7 +87,6 @@
 
 [[models]]
     name = "voxtral-small-24b-2507"
-    provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]

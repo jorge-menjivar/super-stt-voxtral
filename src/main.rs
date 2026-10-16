@@ -33,11 +33,6 @@ use tokio::net::UnixListener;
 use inference::VoxtralEngine;
 use progress::Report;
 
-/// This backend implements exactly one provider (the model routing class every
-/// one of its models declares). A `/v1/load` naming any other provider is
-/// `400 invalid_model`.
-const PROVIDER: &str = "local_voxtral";
-
 /// The models `backend.toml` declares, the only names a load or a prepare
 /// accepts.
 const MODELS: [&str; 2] = ["voxtral-mini-3b-2507", "voxtral-small-24b-2507"];
@@ -183,9 +178,7 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     let st = s.status.lock().unwrap();
     let mut out = json!({ "status": "success", "state": st.state.as_str() });
     if let Some(m) = &st.model {
-        // The contract's model identity is (name, provider); this backend's
-        // provider is fixed, so report it alongside the name.
-        out["model"] = json!({ "name": m, "provider": PROVIDER });
+        out["model"] = json!({ "name": m });
     }
     if let Some(d) = &st.device {
         out["device"] = json!(d);
@@ -211,8 +204,6 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 struct LoadReq {
     name: String,
     #[serde(default)]
-    provider: Option<String>,
-    #[serde(default)]
     device: Option<String>,
 }
 
@@ -222,8 +213,7 @@ struct LoadReq {
 /// It never fails a load: a prepare that errors or panics is logged and goes
 /// back to `starting`, and the load then builds the kernels itself.
 async fn prepare(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
-    // Contract: only a model this backend does not declare is `invalid_model`;
-    // a prepare does not check `provider`.
+    // Contract: a model this backend does not declare is `invalid_model`.
     if !MODELS.contains(&req.name.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
@@ -301,14 +291,8 @@ async fn prepare(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> im
 }
 
 async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
-    // Contract: a model this backend does not declare is `invalid_model`. A
-    // provider other than PROVIDER, which its manifest declares, is too.
-    if !MODELS.contains(&req.name.as_str())
-        || req
-            .provider
-            .as_ref()
-            .is_some_and(|provider| provider != PROVIDER)
-    {
+    // Contract: a model this backend does not declare is `invalid_model`.
+    if !MODELS.contains(&req.name.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "status": "error", "message": "invalid_model" })),
@@ -600,7 +584,6 @@ mod tests {
         let v = json_body(resp).await;
         assert_eq!(v["state"], "ready");
         assert_eq!(v["model"]["name"], "voxtral-mini-3b-2507");
-        assert_eq!(v["model"]["provider"], "local_voxtral");
         assert_eq!(v["device"], "cuda");
         assert_eq!(v["reason"], "recovered");
     }
@@ -702,24 +685,6 @@ mod tests {
         let ended = wait_for(&state, |now| !matches!(now, LoadState::Loading)).await;
         assert!(matches!(ended, LoadState::Error));
         assert!(state.prepare.lock().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn load_rejects_mismatched_provider() {
-        let body =
-            serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "provider": "openai" }))
-                .unwrap();
-        let resp = router(test_state())
-            .oneshot(
-                Request::post("/v1/load")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["message"], "invalid_model");
     }
 
     #[tokio::test]
