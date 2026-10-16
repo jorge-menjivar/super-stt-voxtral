@@ -9,12 +9,6 @@
     version = "0.2.0"
     kind = "subprocess"
     entrypoint = "super-stt-backend-voxtral"
-    # v3: only a daemon that grants a kernel cache directory, Super STT 0.2.5
-    # and later, installs this build. Its kernels are compiled on the first load; a daemon without one
-    # would compile them on every load, minutes each time. Generations are
-    # additive, so v3 carries v2's required `id`, which also names the
-    # install directory: the daemon moves an install from the old `voxtral`
-    # directory, weights included, rather than downloading it again.
     contract = "v4"
     product = "super-stt"
     license = "GPL-3.0-only"
@@ -22,20 +16,6 @@
 
 [network]
     allowed_hosts = []
-
-    # One entry per tarball `.github/workflows/release.yml` builds — the filenames
-    # must match it exactly, since the indexer resolves them against the release's
-    # assets and pins their hashes. The archives hold the binary at their root,
-    # which is where `entrypoint` above says to find it.
-    #
-    # One build per (target, accelerator), and every accelerator a GPU: the models
-    # are too big for a CPU build to be worth shipping. There is no
-    # compute-capability axis: Burn compiles every kernel at runtime through
-    # CubeCL — NVRTC on CUDA, hiprtc on ROCm, SPIR-V on Vulkan, MSL on Metal — so
-    # one CUDA build serves every NVIDIA generation the installed driver can
-    # compile for, where candle's ahead-of-time build needed one asset per SM. What
-    # is left is the CUDA major version, which decides the API the binary was
-    # built against.
 
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
@@ -51,12 +31,6 @@
     accel = "cuda"
     cuda_major = 13
 
-# AMD. The kernels are compiled at runtime here too, so this list is not the
-# set of architectures the binary carries code for — it is the set the backend
-# is claimed to work on, which the schema requires to be explicit because an
-# ahead-of-time HIP build could not honestly claim more. RDNA2 through RDNA4
-# and the CDNA parts; a card outside it will usually work and is simply not
-# advertised.
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-rocm.tar.gz"
     target = "x86_64-unknown-linux-gnu"
@@ -96,12 +70,6 @@
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["gpu"]
-    # Measured on an RTX 3090 in f16: 9.2 GiB resident while idle, 8.7 GiB of
-    # it weights; a transcription takes it to about 9.9 GiB with the key/value
-    # caches and activations, handed back after each one. The first load on a
-    # machine peaks near 12.0 GiB for a few minutes while CubeCL tunes its
-    # kernels, then settles back; later loads read the tuning from the kernel
-    # cache and peak at 9.6 GiB.
     estimated_vram_bytes = 12884901888
     processing_interval_ms = 2000
 
@@ -121,11 +89,6 @@
     supported_devices = ["gpu"]
     estimated_vram_bytes = 55834574848
     processing_interval_ms = 2000
-
-    # Sharded HF transformers weights only — the repo also ships a single-file
-    # `consolidated.safetensors`, which is deliberately omitted: the backend
-    # mmaps every `*.safetensors` in the dir, so pulling both would duplicate
-    # the ~48 GB of weights.
     files = [
         { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/config.json", destination = "models/voxtral-small-24b-2507/config.json" },
         { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/tekken.json", destination = "models/voxtral-small-24b-2507/tekken.json" },
