@@ -31,17 +31,26 @@
     accel = "cuda"
     cuda_major = 13
 
+# AMD. The kernels are compiled at runtime here too, so this list is not the
+# set of architectures the binary carries code for — it is the set the backend
+# is claimed to work on, which the schema requires to be explicit. A card
+# outside it gets the Vulkan build.
 [[assets.subprocess]]
-    file = "voxtral-x86_64-unknown-linux-gnu-rocm.tar.gz"
+    file = "qwen3-asr-x86_64-unknown-linux-gnu-rocm.tar.gz"
     target = "x86_64-unknown-linux-gnu"
     accel = "rocm"
     gfx = [
+        "gfx908",
         "gfx90a",
         "gfx942",
+        "gfx1013",
         "gfx1030",
         "gfx1100",
         "gfx1101",
         "gfx1102",
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
         "gfx1200",
         "gfx1201",
     ]
@@ -55,9 +64,6 @@
     accel = "vulkan"
     vulkan_api = "1.2"
 
-# macOS on Apple Silicon. Metal compiles its kernels at runtime like the other
-# GPU builds, so it has nothing to select on beyond the target. The GPU shares
-# the system's memory there, so the models' `estimated_vram_bytes` is RAM.
 [[assets.subprocess]]
     file = "voxtral-aarch64-apple-darwin-metal.tar.gz"
     target = "aarch64-apple-darwin"
