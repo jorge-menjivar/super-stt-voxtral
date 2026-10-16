@@ -97,6 +97,51 @@ The warm-up covers clips up to 30 s. The first longer clip after a first load
 compiles and tunes its own shapes: 70–80 s for a 34 s clip on CUDA, about
 23 s on Vulkan, and 15–18 s more than later runs on the BC-250.
 
+## Building the kernels before the weights arrive
+
+`POST /v1/prepare` (contract v4) builds the kernels from the two files the
+manifest lists as the model's `prepare_files`, `config.json` and
+`tekken.json`. The daemon can then run it while the weights download. It runs
+the load's warm-up on a model with two encoder layers, two decoder layers and
+every weight zero. A load sent while it runs waits for it, then maps the
+weights. Both models list `prepare_files`. Voxtral Small's prepare has not
+been run, nor has its real load, which needs about 52 GB.
+
+Measured 2026-10-16 on the RTX 3090 with Voxtral Mini. Each run started from an
+empty kernel cache in one backend process, driven the way the daemon drives
+it: either a load once the status read `prepared` ("after"), or a load sent
+20 s into the prepare ("during").
+
+| | CUDA | Vulkan |
+|---|---|---|
+| prepare | 253 s | 82 s |
+| load after it | 9.8 s, phase `loading` | 11.0 s, phase `loading` |
+| load sent during it, ready at | 240 s | 91 s |
+| plain first load, for comparison | 241–247 s | 84–97 s |
+| peak during the prepare | 5.4–5.5 GiB | 5.1 GiB |
+| left when the prepare hands over | 0.4–0.7 GiB | 0.1–0.3 GiB |
+| peak of the process, transcriptions included | 10.2 GiB | 9.6 GiB |
+| peak of a plain first load | 11.8–12.0 GiB | 11.4 GiB |
+| longest stretch without progress | 3.2 s (14.2 s with a build on the CPU) | 2.9–3.2 s |
+
+- **Kernels left to the load.** The load after a prepare compiled one more
+  kernel, an element-wise fusion, and its warm-up took 0.6–0.9 s.
+- **Total time.** Preparing does not shorten a first load done in one go. The
+  gain is that the build no longer waits for the 9 GB of weights. The peak
+  also drops by 1.6–1.8 GiB, because the zeroed model's memory goes back to
+  the driver before the weights map. On CUDA the process's peak came after
+  the load, with the first 34 s clip.
+- **Progress during an overlap.** A load sent during the prepare keeps its
+  progress and reports one `initial_setup`: `building_kernels`, then
+  `loading_weights` and `warming_up`.
+- **Kernel-cache entries.** A prepare in its own process, an earlier version
+  of the same build, wrote 1183 entries on CUDA and 553 on Vulkan. That is
+  what a first load writes, so `WARM_UP_CACHE_ENTRIES` measures it as well.
+- **After a restart.** A second process over the same cache answers `prepared`
+  at once, from the warm marker.
+- **Clips over 30 s.** The first such clip still compiles and tunes its own
+  shapes, as after a plain first load.
+
 ## Moving to Burn and CubeCL main
 
 From Burn `1e9de733` (`qwen3-tts`) and CubeCL `46f7861b`

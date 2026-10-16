@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use burn::module::{ModuleMapper, Param};
 use burn::nn::{Embedding, EmbeddingConfig, Linear};
 use burn::prelude::*;
-use burn::tensor::DType;
+use burn::tensor::{DType, f16};
 use burn_store::{FloatCastAdapter, KeyRemapper, ModuleAdapter, ModuleSnapshot, SafetensorsStore};
 
 use crate::voxtral::audio::{CHUNK_FRAMES, Features};
@@ -146,6 +147,26 @@ fn remapper() -> Result<KeyRemapper, String> {
     .map_err(|err| format!("invalid remapping: {err}"))
 }
 
+/// Replaces every float parameter with zeros of its shape in `dtype`, made the
+/// way the store makes a loaded one, and without initializing it first.
+struct Zeros {
+    dtype: DType,
+}
+
+impl ModuleMapper for Zeros {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+        let shape = param.lazy_shape();
+        let device = param.lazy_device();
+        let data = if self.dtype == DType::F16 {
+            TensorData::zeros::<f16, _>(shape)
+        } else {
+            TensorData::zeros::<f32, _>(shape)
+        };
+        let id = param.id;
+        param.transform_for_load(Tensor::from_data(data, (&device, self.dtype)), id)
+    }
+}
+
 /// A loaded Voxtral checkpoint.
 #[derive(Debug)]
 pub struct Voxtral {
@@ -181,6 +202,28 @@ impl Voxtral {
         })
     }
 
+    /// The model `config` describes with every weight zero, in `dtype`: the
+    /// shapes, dtypes and layouts of a loaded one, so it runs the same kernels
+    /// without the checkpoint. Unlike [`Self::load`]'s, its weights live in
+    /// the pools a cleanup hands back to the driver.
+    pub fn zeroed(config: &VoxtralConfig, dtype: DType, device: &Device) -> Self {
+        let model = Self::init(config, device).map(&mut Zeros { dtype });
+        Self {
+            model,
+            config: config.clone(),
+            device: device.clone(),
+            dtype,
+        }
+    }
+
+    fn init(config: &VoxtralConfig, device: &Device) -> Model {
+        Model {
+            audio_tower: AudioEncoder::init(&config.audio_config, device),
+            multi_modal_projector: Projector::init(config, device),
+            language_model: LanguageModel::init(&config.text_config, device),
+        }
+    }
+
     fn load_weights(
         config: &VoxtralConfig,
         shards: &[PathBuf],
@@ -190,11 +233,7 @@ impl Voxtral {
     ) -> Result<Model, String> {
         // Parameters are initialized lazily, so nothing is allocated for the
         // random weights the checkpoint then replaces.
-        let mut model = Model {
-            audio_tower: AudioEncoder::init(&config.audio_config, device),
-            multi_modal_projector: Projector::init(config, device),
-            language_model: LanguageModel::init(&config.text_config, device),
-        };
+        let mut model = Self::init(config, device);
         let mut results = Vec::with_capacity(shards.len());
         for shard in shards {
             let mut store = SafetensorsStore::from_file(shard)

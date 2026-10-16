@@ -33,14 +33,15 @@ use tokio::net::UnixListener;
 use inference::VoxtralEngine;
 use progress::Report;
 
-/// This backend implements exactly one provider (the model routing class every
-/// one of its models declares). A `/v1/load` naming any other provider is
-/// `400 invalid_model` per the Super STT backend contract.
-const PROVIDER: &str = "local_voxtral";
+/// The models `backend.toml` declares, the only names a load or a prepare
+/// accepts.
+const MODELS: [&str; 2] = ["voxtral-mini-3b-2507", "voxtral-small-24b-2507"];
 
 #[derive(Clone, Copy)]
 enum LoadState {
     Starting,
+    Preparing,
+    Prepared,
     Loading,
     Ready,
     Error,
@@ -50,6 +51,8 @@ impl LoadState {
     fn as_str(self) -> &'static str {
         match self {
             LoadState::Starting => "starting",
+            LoadState::Preparing => "preparing",
+            LoadState::Prepared => "prepared",
             LoadState::Loading => "loading",
             LoadState::Ready => "ready",
             LoadState::Error => "error",
@@ -62,7 +65,8 @@ struct Status {
     model: Option<String>,
     device: Option<String>,
     reason: Option<String>,
-    /// How far a load has got; reported only while `state` is `loading`.
+    /// How far a prepare or a load has got; reported only while `state` is
+    /// `preparing` or `loading`.
     load: Report,
 }
 
@@ -82,6 +86,9 @@ struct AppState {
     backend_dir: PathBuf,
     status: Mutex<Status>,
     engine: Mutex<Option<VoxtralEngine>>,
+    /// The prepare in flight, which a load waits for before it maps any
+    /// weights.
+    prepare: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Names the one writable directory the sandbox grants, where the compiled
@@ -120,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         backend_dir: PathBuf::from(backend_dir),
         status: Mutex::new(Status::default()),
         engine: Mutex::new(None),
+        prepare: Mutex::new(None),
     });
 
     let app = router(state);
@@ -153,6 +161,7 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/ping", get(ping))
         .route("/v1/status", get(get_status))
+        .route("/v1/prepare", post(prepare))
         .route("/v1/load", post(load))
         .route("/v1/transcribe", post(transcribe))
         .route("/v1/cancel", post(cancel))
@@ -169,9 +178,7 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     let st = s.status.lock().unwrap();
     let mut out = json!({ "status": "success", "state": st.state.as_str() });
     if let Some(m) = &st.model {
-        // The contract's model identity is (name, provider); this backend's
-        // provider is fixed, so report it alongside the name.
-        out["model"] = json!({ "name": m, "provider": PROVIDER });
+        out["model"] = json!({ "name": m });
     }
     if let Some(d) = &st.device {
         out["device"] = json!(d);
@@ -179,7 +186,7 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     if let Some(r) = &st.reason {
         out["reason"] = json!(r);
     }
-    if matches!(st.state, LoadState::Loading) {
+    if matches!(st.state, LoadState::Preparing | LoadState::Loading) {
         if let Some(phase) = st.load.phase {
             out["phase"] = json!(phase.as_str());
         }
@@ -197,23 +204,101 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 struct LoadReq {
     name: String,
     #[serde(default)]
-    provider: Option<String>,
-    #[serde(default)]
     device: Option<String>,
 }
 
-async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
-    // Contract: an unimplemented (name, provider) is a client error. This
-    // backend serves only PROVIDER, so a mismatched provider is `invalid_model`.
-    if let Some(provider) = &req.provider
-        && provider != PROVIDER
-    {
+/// Build the kernels a load of `name` will need from the model's small files,
+/// while its weights are still downloading.
+///
+/// It never fails a load: a prepare that errors or panics is logged and goes
+/// back to `starting`, and the load then builds the kernels itself.
+async fn prepare(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
+    // Contract: a model this backend does not declare is `invalid_model`.
+    if !MODELS.contains(&req.name.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "status": "error", "message": "invalid_model" })),
         );
     }
+    let accepted = (
+        StatusCode::ACCEPTED,
+        Json(json!({ "status": "success", "message": "Preparing started" })),
+    );
+    let dir = s.backend_dir.join("models").join(&req.name);
     {
+        let mut st = s.status.lock().unwrap();
+        match st.state {
+            LoadState::Loading | LoadState::Ready => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "status": "error", "message": "already_loading" })),
+                );
+            }
+            LoadState::Preparing | LoadState::Prepared => return accepted,
+            LoadState::Starting | LoadState::Error => {}
+        }
+        st.model = Some(req.name.clone());
+        st.device = None;
+        st.reason = None;
+        st.load = Report::default();
+        if VoxtralEngine::kernels_built(&dir) {
+            st.state = LoadState::Prepared;
+            return accepted;
+        }
+        st.state = LoadState::Preparing;
+    }
+    let device = req.device;
+    let s2 = Arc::clone(&s);
+    let handle = tokio::spawn(async move {
+        let s3 = Arc::clone(&s2);
+        let built = tokio::task::spawn_blocking(move || {
+            let report = |load: Report| {
+                let mut st = s3.status.lock().unwrap_or_else(PoisonError::into_inner);
+                if matches!(st.state, LoadState::Preparing | LoadState::Loading) {
+                    st.load = load;
+                }
+            };
+            VoxtralEngine::build_kernels(&dir, device.as_deref(), &report)
+        })
+        .await;
+        let built = match built {
+            Ok(Ok(())) => {
+                log::info!("kernels built; prepared");
+                true
+            }
+            Ok(Err(e)) => {
+                log::warn!("building the kernels ahead of the load failed: {e:#}");
+                false
+            }
+            Err(e) => {
+                log::warn!("building the kernels ahead of the load panicked: {e}");
+                false
+            }
+        };
+        let mut st = s2.status.lock().unwrap_or_else(PoisonError::into_inner);
+        // A load that arrived meanwhile owns the status now.
+        if matches!(st.state, LoadState::Preparing) {
+            st.state = if built {
+                LoadState::Prepared
+            } else {
+                LoadState::Starting
+            };
+            st.load = Report::default();
+        }
+    });
+    *s.prepare.lock().unwrap() = Some(handle);
+    accepted
+}
+
+async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
+    // Contract: a model this backend does not declare is `invalid_model`.
+    if !MODELS.contains(&req.name.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "error", "message": "invalid_model" })),
+        );
+    }
+    let preparing = {
         let mut st = s.status.lock().unwrap();
         // Contract: reject a concurrent load. A model switch is a fresh load
         // after the daemon tears this backend down, so only an in-flight load on
@@ -224,16 +309,28 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
                 Json(json!({ "status": "error", "message": "already_loading" })),
             );
         }
+        // A prepare still building goes on reporting its progress, as this
+        // load's, and the whole load then counts as the initial setup it is.
+        let preparing = matches!(st.state, LoadState::Preparing);
         st.state = LoadState::Loading;
         st.model = Some(req.name.clone());
         st.device = None;
         st.reason = None;
-        st.load = Report::default();
-    }
+        if !preparing {
+            st.load = Report::default();
+        }
+        preparing
+    };
     let dir = s.backend_dir.join("models").join(&req.name);
     let device = req.device;
+    let pending = s.prepare.lock().unwrap().take();
     let s2 = Arc::clone(&s);
     tokio::spawn(async move {
+        // The prepare hands its memory back before the weights are mapped.
+        // Its outcome does not matter: the load builds whatever it did not.
+        if let Some(pending) = pending {
+            let _ = pending.await;
+        }
         let s3 = Arc::clone(&s2);
         // Everything that can panic runs in the blocking task, whose panic
         // comes back as an error below. A panic in this task itself would end
@@ -247,7 +344,10 @@ async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl 
             // new one asks for any.
             *engine = None;
             s3.engine.clear_poison();
-            let report = |load: Report| {
+            let report = |mut load: Report| {
+                if preparing {
+                    load.phase = Some(progress::Phase::InitialSetup);
+                }
                 let mut st = s3.status.lock().unwrap_or_else(PoisonError::into_inner);
                 if matches!(st.state, LoadState::Loading) {
                     st.load = load;
@@ -381,7 +481,26 @@ mod tests {
             backend_dir: std::env::temp_dir(),
             status: Mutex::new(Status::default()),
             engine: Mutex::new(None),
+            prepare: Mutex::new(None),
         })
+    }
+
+    fn post(path: &str, body: &Value) -> Request<Body> {
+        Request::post(path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(body).unwrap()))
+            .unwrap()
+    }
+
+    async fn wait_for(state: &AppState, done: impl Fn(LoadState) -> bool) -> LoadState {
+        for _ in 0..250 {
+            let now = state.status.lock().unwrap().state;
+            if done(now) {
+                return now;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the state never got there");
     }
 
     async fn json_body(resp: axum::response::Response) -> Value {
@@ -441,6 +560,8 @@ mod tests {
     #[test]
     fn load_state_wire_strings() {
         assert_eq!(LoadState::Starting.as_str(), "starting");
+        assert_eq!(LoadState::Preparing.as_str(), "preparing");
+        assert_eq!(LoadState::Prepared.as_str(), "prepared");
         assert_eq!(LoadState::Loading.as_str(), "loading");
         assert_eq!(LoadState::Ready.as_str(), "ready");
         assert_eq!(LoadState::Error.as_str(), "error");
@@ -463,7 +584,6 @@ mod tests {
         let v = json_body(resp).await;
         assert_eq!(v["state"], "ready");
         assert_eq!(v["model"]["name"], "voxtral-mini-3b-2507");
-        assert_eq!(v["model"]["provider"], "local_voxtral");
         assert_eq!(v["device"], "cuda");
         assert_eq!(v["reason"], "recovered");
     }
@@ -487,29 +607,101 @@ mod tests {
         assert_eq!(v["step"], "building_kernels");
         assert_eq!(v["progress"], 0.5);
 
-        state.status.lock().unwrap().state = LoadState::Ready;
-        let v = json_body(router(state).oneshot(get()).await.unwrap()).await;
-        for field in ["phase", "step", "progress"] {
-            assert!(v.get(field).is_none(), "{field} outside a load: {v}");
+        state.status.lock().unwrap().state = LoadState::Preparing;
+        let v = json_body(router(Arc::clone(&state)).oneshot(get()).await.unwrap()).await;
+        assert_eq!(v["state"], "preparing");
+        assert_eq!(v["step"], "building_kernels");
+        assert_eq!(v["progress"], 0.5);
+
+        for done in [LoadState::Prepared, LoadState::Ready] {
+            state.status.lock().unwrap().state = done;
+            let v = json_body(router(Arc::clone(&state)).oneshot(get()).await.unwrap()).await;
+            for field in ["phase", "step", "progress"] {
+                assert!(v.get(field).is_none(), "{field} outside a load: {v}");
+            }
         }
     }
 
     #[tokio::test]
-    async fn load_rejects_mismatched_provider() {
-        let body =
-            serde_json::to_vec(&json!({ "name": "voxtral-mini-3b-2507", "provider": "openai" }))
+    async fn prepare_is_refused_once_a_load_has_begun() {
+        for begun in [LoadState::Loading, LoadState::Ready] {
+            let state = test_state();
+            state.status.lock().unwrap().state = begun;
+            let resp = router(state)
+                .oneshot(post(
+                    "/v1/prepare",
+                    &json!({ "name": "voxtral-mini-3b-2507" }),
+                ))
+                .await
                 .unwrap();
-        let resp = router(test_state())
-            .oneshot(
-                Request::post("/v1/load")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
+            assert_eq!(json_body(resp).await["message"], "already_loading");
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_an_undeclared_model() {
+        for name in ["whisper-tiny", "../voxtral-mini-3b-2507"] {
+            let resp = router(test_state())
+                .oneshot(post("/v1/prepare", &json!({ "name": name })))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(json_body(resp).await["message"], "invalid_model");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_prepare_goes_back_to_starting() {
+        // backend_dir has no models/, so the prepare fails before the device.
+        let state = test_state();
+        let req = json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" });
+        let resp = router(Arc::clone(&state))
+            .oneshot(post("/v1/prepare", &req))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["message"], "invalid_model");
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(resp).await["message"], "Preparing started");
+        let ended = wait_for(&state, |now| !matches!(now, LoadState::Preparing)).await;
+        assert!(matches!(ended, LoadState::Starting));
+    }
+
+    #[tokio::test]
+    async fn a_load_during_a_prepare_waits_for_it_and_keeps_the_status() {
+        let state = test_state();
+        let req = json!({ "name": "voxtral-mini-3b-2507", "device": "cuda" });
+        let app = router(Arc::clone(&state));
+        let resp = app
+            .clone()
+            .oneshot(post("/v1/prepare", &req))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let resp = app.oneshot(post("/v1/load", &req)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        // The prepare fails, which the load does not mind; the load then fails
+        // on the missing weights, and the prepare's ending does not overwrite
+        // that.
+        let ended = wait_for(&state, |now| !matches!(now, LoadState::Loading)).await;
+        assert!(matches!(ended, LoadState::Error));
+        assert!(state.prepare.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn load_rejects_an_undeclared_model() {
+        for name in ["whisper-tiny", "../voxtral-mini-3b-2507"] {
+            let state = test_state();
+            let resp = router(Arc::clone(&state))
+                .oneshot(post("/v1/load", &json!({ "name": name })))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(json_body(resp).await["message"], "invalid_model");
+            assert!(matches!(
+                state.status.lock().unwrap().state,
+                LoadState::Starting
+            ));
+        }
     }
 
     #[tokio::test]

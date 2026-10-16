@@ -71,14 +71,13 @@
 
 [[models]]
     name = "voxtral-mini-3b-2507"
-    provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["gpu"]
     estimated_vram_bytes = 12884901888
     processing_interval_ms = 2000
-
+    prepare_files = ["models/voxtral-mini-3b-2507/config.json", "models/voxtral-mini-3b-2507/tekken.json"]
     files = [
         { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/config.json", destination = "models/voxtral-mini-3b-2507/config.json" },
         { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/tekken.json", destination = "models/voxtral-mini-3b-2507/tekken.json" },
@@ -88,13 +87,13 @@
 
 [[models]]
     name = "voxtral-small-24b-2507"
-    provider = "local_voxtral"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
     supported_devices = ["gpu"]
     estimated_vram_bytes = 55834574848
     processing_interval_ms = 2000
+    prepare_files = ["models/voxtral-small-24b-2507/config.json", "models/voxtral-small-24b-2507/tekken.json"]
     files = [
         { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/config.json", destination = "models/voxtral-small-24b-2507/config.json" },
         { url = "https://huggingface.co/mistralai/Voxtral-Small-24B-2507/resolve/main/tekken.json", destination = "models/voxtral-small-24b-2507/tekken.json" },
