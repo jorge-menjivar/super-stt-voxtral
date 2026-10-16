@@ -47,8 +47,8 @@ impl RotaryEmbedding {
     /// Tables for positions `0..positions`.
     ///
     /// The frequencies are computed as candle computes them — `theta` narrowed
-    /// to f32 first, then `theta^(2i / D)` in f32 — which is what keeps the
-    /// tables bit-identical to the ones the candle backend ran with.
+    /// to f32 first, then `theta^(2i / D)` in f32 — which keeps the tables
+    /// bit-identical to candle's.
     fn new(cfg: &TextConfig, positions: usize, dtype: DType, device: &Device) -> Self {
         let dim = cfg.head_dim();
         let half = dim / 2;

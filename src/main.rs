@@ -91,8 +91,8 @@ const ENV_CACHE_DIR: &str = "SUPER_STT_BACKEND_CACHE_DIR";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // CubeCL's ROCm compiler logs its whole IR after every pass at `info`,
-    // gigabytes over one warm-up, and the daemon runs backends at `info`. So
-    // it starts at `warn`, which `RUST_LOG` can still raise by naming it.
+    // and the daemon runs backends at `info`. So it starts at `warn`, which
+    // `RUST_LOG` can still raise by naming it.
     env_logger::Builder::new()
         .filter_module("pliron", log::LevelFilter::Warn)
         .parse_env(env_logger::Env::default().default_filter_or("info"))

@@ -3,6 +3,63 @@
 The measurements and findings behind choices in the code. The code's comments
 say what it does and why; the numbers, and how they were found, are here.
 
+## Precision
+
+The backend runs in f16 on every accelerator (`inference::model_dtype`).
+
+- **f16 against bf16.** On CUDA, the parity test puts f16 at candle's own f16
+  drift through every layer, or under it: 0.398 relative error at the last
+  decoder layer, where candle's f16 is at 0.399. bf16, the dtype the
+  checkpoints ship in, sits 1.2–3x above candle's f16 on the same rows: the
+  three mantissa bits it gives up. Its extra range buys nothing here, since
+  Voxtral's largest activations are in the hundreds.
+- **bf16 in CubeCL.**
+  - For AMD, CubeCL compiles through LLVM, and its LLVM backend has no bf16
+    type (`cubecl-llvm`, `to_llvm/ty.rs`). Every kernel that uses one fails to
+    compile, on any AMD card.
+  - SPIR-V allows bf16 only in conversions, dot products and cooperative
+    matrices, yet CubeCL compiles bf16 arithmetic for Vulkan. NVIDIA's 610.57
+    driver segfaults on it.
+  - CubeCL's Metal backend registers no bf16 at all.
+  - `supports_dtype` reports bf16 as supported on the first two all the same.
+- **A failed warm-up fails the load** because of the AMD case. A bf16 kernel
+  failed to compile during the warm-up, the backend swallowed the error,
+  reported `ready`, and then failed every transcription.
+- **f32** weights alone are 19 GB; a 24 GB card only runs through by retrying
+  allocations that ran out of memory.
+- **f32 on a GPU is not exact.** The first convolution sits 2e-4 from candle's,
+  about where TF32 tensor cores would put it, which is why the parity test
+  holds f32 to candle's f16 drift. The CPU build the port was first checked
+  on, since dropped, had bit-identical features and sat within 7e-4 of candle
+  at every layer.
+
+## Loading
+
+- burn-store's `FloatCastAdapter` converts one element at a time on one thread.
+  For Voxtral Mini's 4.7 billion weights that added 8 s to every f16 load.
+  `HalfCast` does the same arithmetic on every core; its test checks all 65,536
+  bf16 bit patterns against burn's conversion.
+- On the AMD BC-250, reading the weights takes about 5 minutes of every load.
+
+## Memory
+
+- **One stream.** CubeCL gives each thread its own stream and each stream its
+  own memory pools. tokio's blocking pool retires idle threads after ten
+  seconds, so requests further apart than that each landed on a new thread and
+  new pools: 2.3 GB more per request until the card ran out. Hence
+  `StreamPolicy::Single`.
+- **Releasing working memory.** An idle backend held its largest request's
+  working memory, over 2 GB on top of the weights. Handing it back takes about
+  70 ms, and the next request about 50 ms more to allocate it again, which is
+  why the release runs after the reply.
+
+## Decoder
+
+- Linear weights are kept column-major. The Burn port of Qwen3-TTS measured
+  the one-row matmul of a decoding step at about 55 µs with a row-major weight
+  and about 12 µs, the memory-bandwidth limit, with a column-major one, on an
+  RTX 3090.
+
 ## Kernel cache and load progress
 
 The warm-up's progress is measured in kernel-cache entries, against a
@@ -90,3 +147,18 @@ From Burn `1e9de733` (`qwen3-tts`) and CubeCL `46f7861b`
   driver logged `timeout waiting for kiq fence`, then a gfx ring timeout. With
   `gpu_recovery=0`, only a reboot brought the GPU back. Both pin sets hung that
   way, and both ran clean once the module was rebuilt for the new kernel.
+- **Compiler logging.** CubeCL's ROCm compiler, pliron, logs its whole IR after
+  every pass at `info`. One warm-up wrote a 10 GB `backend.log`, which is why
+  `main` starts pliron at `warn`.
+
+## Provenance of details kept from the candle backend
+
+- `MAX_NEW_TOKENS`, 1000, is the cap the candle backend decoded to.
+- `post_process_transcription` is the candle backend's, verbatim.
+- `lang:en` encodes to `[9909, 1058, 1262]`, the ids the candle backend
+  hard-coded. The whole prompt matches the one it built, id for id.
+- The log-mel features are bit-for-bit what the candle backend sent the model,
+  including the two choices that differ from the Hugging Face feature
+  extractor (see `voxtral::audio`).
+- The candle port read `tie_word_embeddings` out of the `attention_bias` key;
+  this port reads each from its own.

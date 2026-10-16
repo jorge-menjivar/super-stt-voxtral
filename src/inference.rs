@@ -19,8 +19,8 @@ use crate::voxtral::audio::{self, CHUNK_SAMPLES, SAMPLE_RATE};
 use crate::voxtral::config::VoxtralConfig;
 use crate::voxtral::model::{Taps, Voxtral};
 
-/// Longest transcript, in tokens: the cap candle's backend decoded to. It
-/// also sizes the key/value caches, see [`Voxtral::generate`].
+/// Longest transcript, in tokens. It also sizes the key/value caches, see
+/// [`Voxtral::generate`].
 pub const MAX_NEW_TOKENS: usize = 1000;
 
 /// What the warm-up feeds the decoder, see [`VoxtralEngine::warm_up`]. Any
@@ -109,22 +109,11 @@ pub fn select_device(requested: Option<&str>) -> (Device, &'static str) {
 /// The dtype the weights are cast to: f16 on every accelerator, and f32 on a
 /// device without it.
 ///
-/// f16 halves the weights and their bandwidth, and it is the more faithful of
-/// the two 16-bit types here: the parity test puts it at candle's own f16
-/// drift through every layer, where bf16 — the dtype the checkpoints ship in —
-/// sits 1.2–3x above it, having three fewer mantissa bits. What bf16 buys
-/// instead is range, and Voxtral does not need it: its largest activations
-/// are in the hundreds, far inside f16's.
-///
-/// bf16 is also the type CubeCL gets wrong. For AMD it compiles through LLVM,
-/// which it gives no bf16 type, so every kernel that uses one fails to compile
-/// on any AMD card. SPIR-V allows bf16 only in conversions, dot products and
-/// cooperative matrices, yet CubeCL compiles bf16 arithmetic for Vulkan, which
-/// NVIDIA's 610.57 driver segfaults on. Its Metal backend offers no bf16 at
-/// all. `supports_dtype` reports bf16 as fine on the first two all the same.
-///
-/// f32 is the last resort: exact, but its weights alone are 19 GB, which a
-/// 24 GB card only runs through by retrying allocations that ran out of
+/// f16 halves the weights and their bandwidth, and of the two 16-bit types it
+/// keeps more mantissa bits; what bf16 buys instead is range, which Voxtral's
+/// activations do not need. bf16, the dtype the checkpoints ship in, is also
+/// not one every CubeCL backend compiles, whatever `supports_dtype` reports
+/// (see `docs/port-notes.md`). f32 is the last resort: exact, but twice the
 /// memory.
 pub fn model_dtype(device: &Device) -> DType {
     if device.supports_dtype(DType::F16) {
@@ -145,9 +134,9 @@ pub fn model_dtype(device: &Device) -> DType {
 /// It also gives every thread a stream of its own, and every stream memory
 /// pools of its own. Transcriptions run on tokio's blocking pool, whose idle
 /// threads exit after ten seconds, so requests further apart than that each
-/// landed on a new thread, and so on new pools: 2.3 GB more per request,
-/// measured, until the card ran out. The engine runs one request at a time
-/// anyway, so one stream for everything costs nothing.
+/// land on a new thread, and so on new pools, until the card runs out. The
+/// engine runs one request at a time anyway, so one stream for everything
+/// costs nothing.
 ///
 /// Must run before the first device is created: the configuration is frozen
 /// the first time anything reads it.
@@ -281,7 +270,7 @@ impl VoxtralEngine {
     /// runs, so a kernel that will not compile or a card that runs out of
     /// memory here fails each request after it too; better the daemon hears
     /// it now, with the reason, than a backend that says `ready` and never
-    /// transcribes. (A bf16 kernel on an AMD card did exactly that.)
+    /// transcribes.
     fn warm_up(&mut self) -> Result<()> {
         let started = std::time::Instant::now();
         let silence = vec![0.0; CHUNK_SAMPLES];
@@ -336,10 +325,10 @@ impl VoxtralEngine {
     /// Hand the last transcription's working memory back to the driver.
     ///
     /// The pools keep the pages a request's activations lived in, so an idle
-    /// backend would otherwise hold its largest request's working memory —
-    /// over 2 GB on top of the weights — for as long as it stays loaded. The
-    /// release takes about 70 ms and the next request about 50 ms more to
-    /// allocate again, so the caller runs this after replying, not before.
+    /// backend would otherwise hold its largest request's working memory on
+    /// top of the weights for as long as it stays loaded. Releasing it, and
+    /// the next request allocating it again, take a little time, so the
+    /// caller runs this after replying, not before.
     pub fn release_memory(&self) {
         self.model.release_scratch();
     }
@@ -409,8 +398,8 @@ fn seconds(samples: usize) -> f64 {
 
 /// `<s>[INST][BEGIN_AUDIO][AUDIO]*N[/INST]lang:<code>[TRANSCRIBE]`.
 ///
-/// The `lang:<code>` hint is tokenized: `lang:en` reproduces the model's
-/// original `[9909, 1058, 1262]`.
+/// The `lang:<code>` hint is tokenized: `lang:en` encodes to
+/// `[9909, 1058, 1262]`.
 fn prompt(
     tokenizer: &Tekkenizer,
     audio_tokens: usize,
@@ -465,7 +454,7 @@ fn resolve_files(dir: &Path) -> Result<ModelFiles> {
     })
 }
 
-/// Clean up Voxtral output formatting artifacts. (Ported verbatim.)
+/// Clean up Voxtral output formatting artifacts.
 fn post_process_transcription(text: &str) -> Result<String> {
     let mut cleaned = text.trim().to_string();
     if cleaned.starts_with("\"'") || cleaned.starts_with("'\"") {
@@ -513,9 +502,9 @@ mod tests {
         );
     }
 
-    /// Guards the `lang:<code>` prompt tokenization: `lang:en` must reproduce
-    /// the model's original hardcoded ids `[9909, 1058, 1262]`, or the
-    /// transcription prompt would silently break on a tokenizer change.
+    /// Guards the `lang:<code>` prompt tokenization: `lang:en` must encode to
+    /// `[9909, 1058, 1262]`, or the transcription prompt would silently break
+    /// on a tokenizer change.
     /// Tokenizer-only (no model/GPU); self-skips unless a `tekken.json` is
     /// provisioned via `SUPER_STT_TEST_TEKKEN` or `SUPER_STT_BACKEND_DIR`.
     #[test]
@@ -531,8 +520,8 @@ mod tests {
         );
     }
 
-    /// The whole prompt around the audio, against the ids the candle backend
-    /// built. Self-skips without a tokenizer, as above.
+    /// The whole prompt around the audio, id for id. Self-skips without a
+    /// tokenizer, as above.
     #[test]
     fn prompt_wraps_the_audio_placeholders() {
         let Some(path) = tekken_path() else {

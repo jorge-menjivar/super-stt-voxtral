@@ -45,9 +45,9 @@ use burn_store::{ApplyResult, ModuleAdapter, ModuleContext, bridge};
 ///
 /// That is not only about loading without a transpose. Decoding a token runs
 /// every linear layer of the decoder on a single row, and the matmul kernels
-/// for that product are very sensitive to the layout of the matrix: the Burn
-/// port of Qwen3-TTS measured ~55 µs with a row-major weight against ~12 µs,
-/// the memory-bandwidth limit, with a column-major one on an RTX 3090.
+/// for that product are very sensitive to the layout of the matrix: with a
+/// column-major weight they run at the memory-bandwidth limit, with a
+/// row-major one several times slower.
 pub(crate) fn linear_config(d_input: usize, d_output: usize) -> LinearConfig {
     LinearConfig::new(d_input, d_output).with_layout(LinearLayout::Col)
 }
@@ -78,10 +78,10 @@ impl ModuleAdapter for ReadCounter {
 /// what the model runs in.
 ///
 /// burn-store's `FloatCastAdapter` converts one element at a time on one
-/// thread, which added 8 s to every load of Voxtral Mini's 4.7 billion
-/// weights. The arithmetic is the same — through f32, rounding to nearest
-/// even — so the weights come out bit for bit as they did. Any other tensor
-/// is left to the `FloatCastAdapter` after it.
+/// thread, which a model of billions of weights waits on at every load. The
+/// arithmetic is the same — through f32, rounding to nearest even — so the
+/// weights come out bit for bit as `FloatCastAdapter`'s. Any other tensor is
+/// left to the `FloatCastAdapter` after it.
 #[derive(Debug, Clone)]
 pub(crate) struct HalfCast {
     pub target: DType,
