@@ -35,8 +35,12 @@ use progress::Report;
 
 /// This backend implements exactly one provider (the model routing class every
 /// one of its models declares). A `/v1/load` naming any other provider is
-/// `400 invalid_model` per the Super STT backend contract.
+/// `400 invalid_model`.
 const PROVIDER: &str = "local_voxtral";
+
+/// The models `backend.toml` declares, the only names a load or a prepare
+/// accepts.
+const MODELS: [&str; 2] = ["voxtral-mini-3b-2507", "voxtral-small-24b-2507"];
 
 #[derive(Clone, Copy)]
 enum LoadState {
@@ -218,9 +222,9 @@ struct LoadReq {
 /// It never fails a load: a prepare that errors or panics is logged and goes
 /// back to `starting`, and the load then builds the kernels itself.
 async fn prepare(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
-    if let Some(provider) = &req.provider
-        && provider != PROVIDER
-    {
+    // Contract: only a model this backend does not declare is `invalid_model`;
+    // a prepare does not check `provider`.
+    if !MODELS.contains(&req.name.as_str()) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "status": "error", "message": "invalid_model" })),
@@ -297,10 +301,13 @@ async fn prepare(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> im
 }
 
 async fn load(State(s): State<Arc<AppState>>, Json(req): Json<LoadReq>) -> impl IntoResponse {
-    // Contract: an unimplemented (name, provider) is a client error. This
-    // backend serves only PROVIDER, so a mismatched provider is `invalid_model`.
-    if let Some(provider) = &req.provider
-        && provider != PROVIDER
+    // Contract: a model this backend does not declare is `invalid_model`. A
+    // provider other than PROVIDER, which its manifest declares, is too.
+    if !MODELS.contains(&req.name.as_str())
+        || req
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider != PROVIDER)
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -650,16 +657,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_rejects_mismatched_provider() {
-        let resp = router(test_state())
-            .oneshot(post(
-                "/v1/prepare",
-                &json!({ "name": "voxtral-mini-3b-2507", "provider": "openai" }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["message"], "invalid_model");
+    async fn prepare_rejects_an_undeclared_model() {
+        for name in ["whisper-tiny", "../voxtral-mini-3b-2507"] {
+            let resp = router(test_state())
+                .oneshot(post("/v1/prepare", &json!({ "name": name })))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(json_body(resp).await["message"], "invalid_model");
+        }
     }
 
     #[tokio::test]
@@ -714,6 +720,23 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(resp).await["message"], "invalid_model");
+    }
+
+    #[tokio::test]
+    async fn load_rejects_an_undeclared_model() {
+        for name in ["whisper-tiny", "../voxtral-mini-3b-2507"] {
+            let state = test_state();
+            let resp = router(Arc::clone(&state))
+                .oneshot(post("/v1/load", &json!({ "name": name })))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(json_body(resp).await["message"], "invalid_model");
+            assert!(matches!(
+                state.status.lock().unwrap().state,
+                LoadState::Starting
+            ));
+        }
     }
 
     #[tokio::test]
