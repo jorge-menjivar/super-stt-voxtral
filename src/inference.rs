@@ -72,6 +72,11 @@ const WARM_UP_CACHE_ENTRIES: u64 = if cfg!(feature = "cuda") {
     553
 };
 
+/// Encoder and decoder layers the kernel build keeps, see
+/// [`VoxtralEngine::build_kernels`]: two, so that what runs between one layer
+/// and the next is there too.
+const BUILD_LAYERS: usize = 2;
+
 /// Where CubeCL keeps this backend's kernels, when the daemon grants a place.
 static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -180,10 +185,7 @@ impl VoxtralEngine {
         let files = resolve_files(model_dir)?;
         let config = VoxtralConfig::from_json(&std::fs::read_to_string(&files.config)?)
             .with_context(|| format!("parsing {}", files.config.display()))?;
-        let marker = model_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(warm_marker);
+        let marker = warm_marker_for(model_dir);
         let phase = if marker.as_ref().is_some_and(|m| m.exists()) {
             Phase::Loading
         } else {
@@ -198,16 +200,69 @@ impl VoxtralEngine {
             let _finish = Finish(&tracker);
             Self::load_tracked(&files, &config, device, phase, &tracker)
         })?;
-        if let Some(marker) = marker {
-            let written = marker
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&marker, b""));
-            if let Err(e) = written {
-                warn!("could not mark {} warm: {e}", marker.display());
-            }
-        }
+        mark_warm(marker.as_deref());
         Ok(engine)
+    }
+
+    /// Compile and tune the kernels a load of the model in `model_dir` needs,
+    /// from its `config.json` and `tekken.json` alone, so that they can be
+    /// built while the weights are still on their way.
+    ///
+    /// The kernels depend on the shapes, dtypes and layouts the model runs at,
+    /// not on its weights, so this runs the warm-up on a model whose weights
+    /// are zeros. Every encoder layer runs the same kernels at the same
+    /// shapes, and so does every decoder layer, so it keeps [`BUILD_LAYERS`]
+    /// of each. A later load of the model then finds them cached and is not an
+    /// initial setup. Its memory is handed back before this returns, so the
+    /// load that follows has the device to itself.
+    pub fn build_kernels(
+        model_dir: &Path,
+        device: Option<&str>,
+        report: &(dyn Fn(Report) + Sync),
+    ) -> Result<()> {
+        let config_path = model_dir.join("config.json");
+        let mut config = VoxtralConfig::from_json(&std::fs::read_to_string(&config_path)?)
+            .with_context(|| format!("parsing {}", config_path.display()))?;
+        config.audio_config.num_hidden_layers =
+            config.audio_config.num_hidden_layers.min(BUILD_LAYERS);
+        config.text_config.num_hidden_layers =
+            config.text_config.num_hidden_layers.min(BUILD_LAYERS);
+        let tokenizer = Tekkenizer::from_file(model_dir.join("tekken.json")).map_err(Error::msg)?;
+        let (device, device_name) = select_device(device);
+        let dtype = model_dtype(&device);
+        info!(
+            "building Voxtral's kernels from {} on {device_name}, in {dtype:?}",
+            model_dir.display()
+        );
+        let tracker = Tracker::new(Phase::InitialSetup, report);
+        let built = std::thread::scope(|scope| {
+            scope.spawn(|| tracker.run());
+            let _finish = Finish(&tracker);
+            tracker.enter(
+                Step::BuildingKernels,
+                Measure::cache_entries(WARM_UP_CACHE_ENTRIES),
+            );
+            let mut engine = Self {
+                model: Voxtral::zeroed(&config, dtype, &device),
+                tokenizer,
+                mel_filters: audio::mel_filters(),
+                device_name,
+            };
+            engine.warm_up()
+        });
+        device.memory_cleanup();
+        if let Err(err) = device.sync() {
+            warn!("syncing the device after building the kernels failed: {err}");
+        }
+        built?;
+        mark_warm(warm_marker_for(model_dir).as_deref());
+        Ok(())
+    }
+
+    /// Whether a load of the model in `model_dir` would find its kernels
+    /// built by this build.
+    pub fn kernels_built(model_dir: &Path) -> bool {
+        warm_marker_for(model_dir).is_some_and(|marker| marker.exists())
     }
 
     /// [`Self::load`] under its tracker.
@@ -356,8 +411,9 @@ impl VoxtralEngine {
     }
 }
 
-/// Where a load records that `model` finished a warm-up with this build, so
-/// that the next load of it is not an initial setup. It sits beside the
+/// Where a load or a kernel build records that the model in `model_dir`
+/// finished a warm-up with this build, so that the next load of it is not an
+/// initial setup. It sits beside the
 /// kernels it vouches for, so clearing the cache clears it too. Without a
 /// cache directory there is none, and every load is an initial setup, since
 /// every load compiles everything.
@@ -366,6 +422,14 @@ impl VoxtralEngine {
 /// kernels on: any rebuild, a release that keeps its version included,
 /// recompiles all of them, and should say so. Without a build ID the crate
 /// version stands in; every release asset has one.
+fn warm_marker_for(model_dir: &Path) -> Option<PathBuf> {
+    model_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(warm_marker)
+}
+
+/// [`warm_marker_for`] by the model's name.
 fn warm_marker(model: &str) -> Option<PathBuf> {
     let build = buildid::build_id().map_or_else(
         || env!("CARGO_PKG_VERSION").to_string(),
@@ -380,6 +444,20 @@ fn warm_marker(model: &str) -> Option<PathBuf> {
         dir.join("voxtral-warm")
             .join(format!("{model}-{BUILT_FOR}-{build}"))
     })
+}
+
+/// Writes `marker`, if there is one, recording a finished warm-up.
+fn mark_warm(marker: Option<&Path>) {
+    let Some(marker) = marker else {
+        return;
+    };
+    let written = marker
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(marker, b""));
+    if let Err(e) = written {
+        warn!("could not mark {} warm: {e}", marker.display());
+    }
 }
 
 /// Stops a [`Tracker`] when dropped.

@@ -117,6 +117,15 @@ grants one — everything else the sandbox exposes is read-only — so only the
 first load of a build pays; without it the backend logs a warning and
 recompiles on every load.
 
+Super STT can have the kernels built before the weights arrive. `POST
+/v1/prepare`, with the body of `/v1/load`, builds them from the model's
+`config.json` and `tekken.json` alone, which the manifest lists as its
+`prepare_files`. The status reads `preparing`, then `prepared`. A load sent
+in the meantime waits for the build and reports both as one initial setup.
+On the RTX 3090, a load after a prepare is ready in 10–11 s. The prepared
+path peaks at 10.2 GiB on CUDA and 9.6 GiB on Vulkan, where a plain first
+load peaks at 12.0 and 11.4 GiB. See `docs/port-notes.md`.
+
 ## Building from source
 
 Most people never need to — Super STT downloads prebuilt releases. For

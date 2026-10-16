@@ -78,7 +78,7 @@
     supported_devices = ["gpu"]
     estimated_vram_bytes = 12884901888
     processing_interval_ms = 2000
-
+    prepare_files = ["models/voxtral-mini-3b-2507/config.json", "models/voxtral-mini-3b-2507/tekken.json"]
     files = [
         { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/config.json", destination = "models/voxtral-mini-3b-2507/config.json" },
         { url = "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/main/tekken.json", destination = "models/voxtral-mini-3b-2507/tekken.json" },
