@@ -354,6 +354,6 @@ mod tests {
         // 0 is a multiple of any chunk, so empty input yields ZERO chunks. The
         // transcribe handler rejects empty audio (400 invalid_audio) before it
         // can reach here; this pins the helper's own behavior at the boundary.
-        assert!(pad_to_chunk(&[], 4).is_empty());
+        assert_eq!(pad_to_chunk(&[], 4), Vec::<f32>::new());
     }
 }

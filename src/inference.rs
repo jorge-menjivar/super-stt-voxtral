@@ -60,14 +60,16 @@ const BUILT_FOR: &str = if cfg!(feature = "cuda") {
 
 /// The entries a first load's warm-up writes to the kernel cache, which is
 /// what its progress is measured against: tuning results and compiled
-/// kernels, 42 and 672 on CUDA and 42 and 244 on Vulkan, measured with Voxtral
-/// Mini on an RTX 3090. ROCm is taken to be CUDA and Metal to be Vulkan, unmeasured.
+/// kernels, each with a record beside it, counted from an empty cache for
+/// each accelerator (see `docs/port-notes.md`); Metal uses Vulkan's count.
 /// Only the pace of the bar rides on it: past the estimate it slows down short
 /// of the end rather than stopping, see `progress::estimate`.
-const WARM_UP_CACHE_ENTRIES: u64 = if cfg!(any(feature = "cuda", feature = "rocm")) {
-    714
+const WARM_UP_CACHE_ENTRIES: u64 = if cfg!(feature = "cuda") {
+    1166
+} else if cfg!(feature = "rocm") {
+    351
 } else {
-    286
+    553
 };
 
 /// Where CubeCL keeps this backend's kernels, when the daemon grants a place.

@@ -17,14 +17,12 @@
 //! # Provenance
 //!
 //! Ported from `candle_transformers::models::voxtral` at
-//! `jorge-menjivar/candle@eef47d5`, which this backend ran on before, and
-//! checked against it layer by layer (see `parity`, and `parity/` at the root
-//! of the repository for the candle side). The decoder stack and the
-//! checkpoint adapter below
-//! are adapted from the `qwen3-tts` example of `jorge-menjivar/burn` at
-//! `1e9de733d` — the revision `Cargo.toml` pins — with what Qwen3 has and Llama
-//! does not (per-head query/key norms, layer scales, sliding windows) taken
-//! out.
+//! `jorge-menjivar/candle@eef47d5`, and checked against it layer by layer
+//! (see `parity`, and `parity/` at the root of the repository for the candle
+//! side). The decoder stack and the checkpoint adapter below are adapted from
+//! the `qwen3-tts` example of `jorge-menjivar/burn` at `1e9de733d`, with what
+//! Qwen3 has and Llama does not (per-head query/key norms, layer scales,
+//! sliding windows) taken out.
 
 pub mod audio;
 pub mod config;
@@ -123,7 +121,7 @@ fn bf16_to_f16(data: &TensorData) -> TensorData {
             });
         }
     });
-    TensorData::new(out, data.shape.clone())
+    TensorData::new(out, data.shape().clone())
 }
 
 /// Loads the PyTorch checkpoints into modules built with [`linear_config`].
@@ -245,7 +243,7 @@ mod tests {
         let data = TensorData::new(values, [4, 65_536]);
         let ours = bf16_to_f16(&data);
         let burns = data.convert_dtype(DType::F16);
-        assert_eq!(ours.shape, burns.shape);
+        assert_eq!(ours.shape(), burns.shape());
         let ours = ours.as_slice::<f16>().unwrap();
         let burns = burns.as_slice::<f16>().unwrap();
         for (i, (a, b)) in ours.iter().zip(burns).enumerate() {
