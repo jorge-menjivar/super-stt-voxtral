@@ -104,8 +104,8 @@ manifest lists as the model's `prepare_files`, `config.json` and
 `tekken.json`. The daemon can then run it while the weights download. It runs
 the load's warm-up on a model with two encoder layers, two decoder layers and
 every weight zero. A load sent while it runs waits for it, then maps the
-weights. Only Voxtral Mini lists `prepare_files` so far, because a real load
-of Voxtral Small has not been tested.
+weights. Both models list `prepare_files`. Voxtral Small's prepare has not
+been run, nor has its real load, which needs about 52 GB.
 
 Measured 2026-10-16 on the RTX 3090 with Voxtral Mini. Each run started from an
 empty kernel cache in one backend process, driven the way the daemon drives
