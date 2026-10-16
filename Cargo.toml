@@ -22,10 +22,11 @@
     anyhow = "1"
     axum = { version = "0.8", default-features = false, features = ["json", "tokio"] }
     # The model in `src/voxtral` is written against Burn, pinned by revision to
-    # the fork's `qwen3-tts` branch, which the Qwen TTS backend builds on too:
-    # upstream Burn is missing fixes that fork carries, to its fusion crates and
-    # to `into_data`, whose bytes a later in-place kernel could overwrite. `burn`
-    # has no stability guarantee between revisions anyway.
+    # the fork's `qwen3-tts-main` branch, which the Qwen TTS and Qwen ASR
+    # backends build on too: upstream Burn main plus fixes the fork carries, to
+    # its fusion crates and to `into_data`, whose bytes a later in-place kernel
+    # could overwrite, and dense convolutions offered as a matmul. `burn` has no
+    # stability guarantee between revisions anyway.
     #
     # Burn is what buys this backend ROCm and Vulkan, which candle cannot reach
     # at all — CubeCL compiles every kernel at runtime for whatever device it
@@ -33,7 +34,7 @@
     # instead of one per CUDA compute capability.
     burn = {
         git = "https://github.com/jorge-menjivar/burn.git",
-        rev = "1e9de733d6ff94f34c34a5765ea0b4926478f989",
+        rev = "059c75e21c9f4e4fdb466bbdbf8710873e1e805d",
         features = ["default", "cubecl"]
     }
     # The binary's build ID, which CubeCL keys its compiled kernels on: the
@@ -42,9 +43,14 @@
     buildid = "1"
     burn-store = {
         git = "https://github.com/jorge-menjivar/burn.git",
-        rev = "1e9de733d6ff94f34c34a5765ea0b4926478f989",
+        rev = "059c75e21c9f4e4fdb466bbdbf8710873e1e805d",
         features = ["std", "safetensors"]
     }
+    # CubeCL keeps compiled kernels and tuning results on disk only with its
+    # `persistence` feature, which Burn leaves to its GPU backends' defaults;
+    # asking for it here keeps it on in every build, whatever a backend's
+    # defaults. The patch below makes this the fork's crate, like Burn's.
+    cubecl = { git = "https://github.com/tracel-ai/cubecl", rev = "33b6dfbd63cc8fa08346a2c77b04f156b9192e62", default-features = false, features = ["persistence"] }
     env_logger = "0.11"
     hyper = { version = "1", features = ["http1", "server"] }
     hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }
@@ -74,24 +80,34 @@
 # Voxtral Mini's weights alone being 8.7 GiB in bf16. `vulkan` is the default
 # because it is the one that builds anywhere: no SDK, and the loader is found
 # at runtime.
+#
+# CubeCL compiles CUDA kernels through LLVM unless its C++ backend is asked
+# for, and LLVM has no tensor-core form for `tf32` or `bf16`, so the CUDA
+# build asks for the C++ backend. ROCm keeps LLVM: it has tensor-core forms
+# for `f16`, which every accelerator here computes in, and CubeCL's C++
+# backend for HIP compiles too slowly for a first load to keep reporting
+# progress. See `docs/port-notes.md`.
 [features]
     default = ["vulkan"]
-    cuda = ["burn/cuda"]
+    cuda = ["burn/cuda", "cubecl/cuda-cpp"]
     metal = ["burn/metal"]
     rocm = ["burn/rocm"]
     vulkan = ["burn/vulkan"]
 
-# The CubeCL the Burn fork's `qwen3-tts` branch builds against: the pinned
-# upstream revision plus its `compilation-cache-default` branch. A `[patch]` in
-# Burn's own manifest does not reach a build that merely depends on Burn —
-# patches come from the root of the crate being built — so this backend has to
-# repeat it, or it would build a different CubeCL than the fork was measured
-# on. It keeps compiled kernels across runs by default, coalesces the sliced
-# memory pool's free slices lazily, and lets the channel server take a partial
-# batch when its producer pauses.
+# The CubeCL the Burn fork's `qwen3-tts-main` branch builds against: CubeCL
+# main plus the fork's `compilation-cache-main` branch. A `[patch]` in Burn's
+# own manifest does not reach a build that merely depends on Burn — patches
+# come from the root of the crate being built — so this backend has to repeat
+# it, or it would build a different CubeCL than the fork was measured on. It
+# keeps compiled kernels across runs by default, coalesces the sliced memory
+# pool's free slices lazily, lets the channel server take a partial batch when
+# its producer pauses, gives an empty allocation a real page, serializes the
+# kernel cache's statements, which Turso's reader bookkeeping cannot take from
+# several threads at once, and records CUDA and HIP graphs in relaxed mode, so
+# the device thread still serves other streams meanwhile.
 [patch."https://github.com/tracel-ai/cubecl"]
-    cubecl = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
-    cubecl-common = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
-    cubecl-environment = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
-    cubecl-ir = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
-    cubecl-zspace = { git = "https://github.com/jorge-menjivar/cubecl", rev = "46f7861b8e941823bcff79238b5181f78c6364dd" }
+    cubecl = { git = "https://github.com/jorge-menjivar/cubecl", rev = "8f4b1b36dc7f870cc65d297b8b2286af2d8986dc" }
+    cubecl-common = { git = "https://github.com/jorge-menjivar/cubecl", rev = "8f4b1b36dc7f870cc65d297b8b2286af2d8986dc" }
+    cubecl-environment = { git = "https://github.com/jorge-menjivar/cubecl", rev = "8f4b1b36dc7f870cc65d297b8b2286af2d8986dc" }
+    cubecl-ir = { git = "https://github.com/jorge-menjivar/cubecl", rev = "8f4b1b36dc7f870cc65d297b8b2286af2d8986dc" }
+    cubecl-zspace = { git = "https://github.com/jorge-menjivar/cubecl", rev = "8f4b1b36dc7f870cc65d297b8b2286af2d8986dc" }

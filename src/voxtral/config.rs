@@ -241,9 +241,9 @@ mod tests {
         assert!(cfg.text_config.tie_word_embeddings);
     }
 
-    /// The candle port read `tie_word_embeddings` out of the `attention_bias`
-    /// key. They are two different things — a Llama `attention_bias` puts a
-    /// bias on the projections — so each is now read from its own key.
+    /// `attention_bias` and `tie_word_embeddings` are two different things —
+    /// a Llama `attention_bias` puts a bias on the projections — so each is
+    /// read from its own key.
     #[test]
     fn attention_bias_does_not_tie_embeddings() {
         let cfg = VoxtralConfig::from_json(

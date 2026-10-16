@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Layer-by-layer comparison with candle, the implementation this backend ran
-//! on before the port.
+//! Layer-by-layer comparison with candle's Voxtral, the reference the port is
+//! held to.
 //!
 //! `parity/` dumps every layer's output of candle's Voxtral over one clip; this
 //! runs the port over the same inputs and compares each against it. Gated,
@@ -15,23 +15,17 @@
 //! `SUPER_STT_PARITY_DTYPE` picks the port's dtype, `f32` by default. What is
 //! held depends on it:
 //!
-//! - f32 on a GPU is not quite f32: the first convolution already sits 2e-4
-//!   from candle's, about where TF32 tensor cores would put it, and the error
-//!   compounds from there — so it is held to the baseline below: no layer may
-//!   drift further than candle's own f16 does. (The CPU build the port was
-//!   first checked on, since dropped, did candle's arithmetic in a different
-//!   order and sat within 7e-4 of it at every layer.)
+//! - f32 on a GPU is not quite f32: tensor cores round matmul inputs to TF32,
+//!   and the error compounds from layer to layer — so it is held to the
+//!   baseline below: no layer may drift further than candle's own f16 does.
 //! - in f16 and bf16 the table is the measurement.
 //!
 //! The greedy tokens must match candle's in every case.
 //!
 //! What a narrower type *should* cost is what it costs candle, so
 //! `SUPER_STT_PARITY_BASELINE` takes a second dump — candle over the same clip
-//! in f16, which is how the candle backend shipped — and adds its distance
-//! from the f32 reference to every row. A port drifting further than that is
-//! doing something candle does not. (The port in f16 lands on or under that
-//! column on every row; in bf16 it sits 1.2–3x above it, which is the three
-//! mantissa bits bf16 gives up.)
+//! in f16 — and adds its distance from the f32 reference to every row. A port
+//! drifting further than that is doing something candle does not.
 //!
 //! The features are compared on their own first; the model is then fed
 //! candle's, so the comparison starts from identical input. From there each

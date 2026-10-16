@@ -6,8 +6,8 @@
 //! 120 seconds once it has reported progress at all, so every step here is
 //! measured by something that moves while the work does: the bytes of the
 //! checkpoint read so far, then the entries CubeCL writes to its kernel cache
-//! as it compiles and tunes. On an RTX 3090's first load the longest pause
-//! between two cache entries was 3.0 s on CUDA and 1.6 s on Vulkan.
+//! as it compiles and tunes. How long each accelerator goes between two
+//! entries is in `docs/port-notes.md`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};

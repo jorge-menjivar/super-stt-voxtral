@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! 16 kHz samples to the log-mel spectrogram the audio tower reads.
 //!
-//! This is the whisper.cpp algorithm candle's Voxtral used, ported operation
+//! This is the whisper.cpp algorithm candle's Voxtral uses, ported operation
 //! for operation — the same radix-2 FFT with a DFT under odd sizes, the same
-//! order of accumulation — so that the features are bit-for-bit those the
-//! candle backend computed. Two of its choices differ from the Hugging Face
-//! feature extractor the model was trained with, and are kept deliberately,
-//! for parity with what this backend has always sent the model:
+//! order of accumulation — so that the features are bit-for-bit candle's. Two
+//! of its choices differ from the Hugging Face feature extractor the model
+//! was trained with, and are kept deliberately, for that parity:
 //!
 //! - frames start at their hop rather than centred on it, and the power of
 //!   every bin but the first and the Nyquist one counts its mirror image too;
@@ -354,6 +353,6 @@ mod tests {
         // 0 is a multiple of any chunk, so empty input yields ZERO chunks. The
         // transcribe handler rejects empty audio (400 invalid_audio) before it
         // can reach here; this pins the helper's own behavior at the boundary.
-        assert!(pad_to_chunk(&[], 4).is_empty());
+        assert_eq!(pad_to_chunk(&[], 4), Vec::<f32>::new());
     }
 }

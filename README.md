@@ -62,13 +62,20 @@ Measured on an RTX 3090 against the candle build this backend shipped before
 | first transcription after a load | 8.4 s | 0.8 s |
 | load, kernel cache warm | 3.2 s | 4.5–5.9 s |
 | load, first ever on the machine | 3.2 s | 4–5 min |
-| VRAM, idle | 9.8–10.7 GiB | 9.0 GiB |
-| VRAM, during a transcription | 10.7 GiB | 11.3 GiB |
+| VRAM, idle | 9.8–10.7 GiB | 9.2 GiB |
+| VRAM, during a transcription | 10.7 GiB | 9.9 GiB |
+| VRAM, peak of the first load | — | 12.0 GiB |
 
 The Burn column was measured in bf16. The backend now runs in f16 (see below),
 and the two timed back to back on the same card are the same speed: 0.83–1.03 s
 for the short clip and 1.88–2.13 s for the long one each, with other work on
 the CPU at the time. A warm load in f16 takes 6.8 s.
+
+The VRAM rows are from the current Burn and CubeCL pins (see Building from
+source); the previous ones, `qwen3-tts` at `1e9de733`, held 9.0–9.15 GiB idle
+and 11.4 GiB during a transcription, and peaked at 16.2 GiB on a first load.
+Timed back to back on the same card, the two ran at the same speed, within
+the spread of a card that was also driving a desktop.
 
 A request after a pause takes longer on both, 1.1–1.3 s for the short clip on
 candle and 0.8–1.1 s on Burn: the GPU drops to its idle clocks in between.
@@ -78,14 +85,18 @@ allocates it again, for about 50 ms.
 
 The Vulkan build on the same card (NVIDIA driver 610.57, f16) transcribes the
 same text: 0.82–0.86 s for the short clip and 1.78–1.86 s for the long one,
-8.8 GiB idle, and a load of 13.5 s with the kernel cache warm or 83 s the
-first time.
+8.8 GiB idle and 9.3 GiB during a transcription, and a load of 9–13.5 s with
+the kernel cache warm or 83–97 s the first time, which peaks at 11.4 GiB.
 
 The ROCm build on an AMD BC-250 (gfx1013, ROCm 7.2.4), a small RDNA1 part that
 shares 16 GB with its CPU, transcribes both clips word for word as CUDA does:
-26.6 s for the short one and 46 s for the long one, slower than real time on
-that chip. It peaks at 12 GB of the shared memory, and its first load takes
-about 8 minutes.
+27 s for the short one and 46.5 s for the long one, slower than real time on
+that chip. It peaks at 12 GB of the shared memory. Its first load takes about
+12 minutes, and a later one 5.5, most of it reading the weights. Its longest
+pause in load progress, 106 s, is the closest any build comes to the 120 s
+after which Super STT gives up on a load. The board needs its patched amdgpu
+driver (`flush_pasid_uses_kiq` off, ROCm issue 6313): on the stock one, a load
+hangs the GPU.
 
 The decoder's key/value caches are allocated up front and every decoding step
 attends to all of them through a mask, so every step runs the same kernels on
@@ -123,10 +134,13 @@ Each build carries exactly one accelerator, which is why the recipes pass
 `--no-default-features`: cargo features are additive, so `--features cuda` alone
 would keep the default Vulkan backend too.
 
-**Burn comes from a fork.** `Cargo.toml` pins `jorge-menjivar/burn` on the
-branch the Qwen TTS backend builds on, which carries fixes to Burn's fusion
-crates and to tensor reads that are not upstream yet, along with the matching
-CubeCL patch.
+**Burn comes from a fork.** `Cargo.toml` pins `jorge-menjivar/burn` on its
+`qwen3-tts-main` branch, which the Qwen TTS and Qwen ASR backends build on
+too: upstream Burn main plus fixes to Burn's fusion crates and to tensor reads
+that are not upstream yet. The matching CubeCL patch is the fork's
+`compilation-cache-main` branch, CubeCL main plus the fork's fixes. The CUDA
+build compiles its kernels through CubeCL's C++ backend rather than its
+default, LLVM, which has no tensor-core form for `tf32` or `bf16`.
 
 ## Checking the port against candle
 

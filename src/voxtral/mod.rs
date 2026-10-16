@@ -17,14 +17,12 @@
 //! # Provenance
 //!
 //! Ported from `candle_transformers::models::voxtral` at
-//! `jorge-menjivar/candle@eef47d5`, which this backend ran on before, and
-//! checked against it layer by layer (see `parity`, and `parity/` at the root
-//! of the repository for the candle side). The decoder stack and the
-//! checkpoint adapter below
-//! are adapted from the `qwen3-tts` example of `jorge-menjivar/burn` at
-//! `1e9de733d` — the revision `Cargo.toml` pins — with what Qwen3 has and Llama
-//! does not (per-head query/key norms, layer scales, sliding windows) taken
-//! out.
+//! `jorge-menjivar/candle@eef47d5`, and checked against it layer by layer
+//! (see `parity`, and `parity/` at the root of the repository for the candle
+//! side). The decoder stack and the checkpoint adapter below are adapted from
+//! the `qwen3-tts` example of `jorge-menjivar/burn` at `1e9de733d`, with what
+//! Qwen3 has and Llama does not (per-head query/key norms, layer scales,
+//! sliding windows) taken out.
 
 pub mod audio;
 pub mod config;
@@ -47,9 +45,9 @@ use burn_store::{ApplyResult, ModuleAdapter, ModuleContext, bridge};
 ///
 /// That is not only about loading without a transpose. Decoding a token runs
 /// every linear layer of the decoder on a single row, and the matmul kernels
-/// for that product are very sensitive to the layout of the matrix: the Burn
-/// port of Qwen3-TTS measured ~55 µs with a row-major weight against ~12 µs,
-/// the memory-bandwidth limit, with a column-major one on an RTX 3090.
+/// for that product are very sensitive to the layout of the matrix: with a
+/// column-major weight they run at the memory-bandwidth limit, with a
+/// row-major one several times slower.
 pub(crate) fn linear_config(d_input: usize, d_output: usize) -> LinearConfig {
     LinearConfig::new(d_input, d_output).with_layout(LinearLayout::Col)
 }
@@ -80,10 +78,10 @@ impl ModuleAdapter for ReadCounter {
 /// what the model runs in.
 ///
 /// burn-store's `FloatCastAdapter` converts one element at a time on one
-/// thread, which added 8 s to every load of Voxtral Mini's 4.7 billion
-/// weights. The arithmetic is the same — through f32, rounding to nearest
-/// even — so the weights come out bit for bit as they did. Any other tensor
-/// is left to the `FloatCastAdapter` after it.
+/// thread, which a model of billions of weights waits on at every load. The
+/// arithmetic is the same — through f32, rounding to nearest even — so the
+/// weights come out bit for bit as `FloatCastAdapter`'s. Any other tensor is
+/// left to the `FloatCastAdapter` after it.
 #[derive(Debug, Clone)]
 pub(crate) struct HalfCast {
     pub target: DType,
@@ -123,7 +121,7 @@ fn bf16_to_f16(data: &TensorData) -> TensorData {
             });
         }
     });
-    TensorData::new(out, data.shape.clone())
+    TensorData::new(out, data.shape().clone())
 }
 
 /// Loads the PyTorch checkpoints into modules built with [`linear_config`].
@@ -245,7 +243,7 @@ mod tests {
         let data = TensorData::new(values, [4, 65_536]);
         let ours = bf16_to_f16(&data);
         let burns = data.convert_dtype(DType::F16);
-        assert_eq!(ours.shape, burns.shape);
+        assert_eq!(ours.shape(), burns.shape());
         let ours = ours.as_slice::<f16>().unwrap();
         let burns = burns.as_slice::<f16>().unwrap();
         for (i, (a, b)) in ours.iter().zip(burns).enumerate() {
