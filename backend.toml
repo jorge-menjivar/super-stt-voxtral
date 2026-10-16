@@ -15,26 +15,27 @@
     # additive, so v3 carries v2's required `id`, which also names the
     # install directory: the daemon moves an install from the old `voxtral`
     # directory, weights included, rather than downloading it again.
-    contract = "v3"
+    contract = "v4"
+    product = "super-stt"
     license = "GPL-3.0-only"
     description = "Local Voxtral speech-to-text."
 
 [network]
     allowed_hosts = []
 
-# One entry per tarball `.github/workflows/release.yml` builds — the filenames
-# must match it exactly, since the indexer resolves them against the release's
-# assets and pins their hashes. The archives hold the binary at their root,
-# which is where `entrypoint` above says to find it.
-#
-# One build per (target, accelerator), and every accelerator a GPU: the models
-# are too big for a CPU build to be worth shipping. There is no
-# compute-capability axis: Burn compiles every kernel at runtime through
-# CubeCL — NVRTC on CUDA, hiprtc on ROCm, SPIR-V on Vulkan, MSL on Metal — so
-# one CUDA build serves every NVIDIA generation the installed driver can
-# compile for, where candle's ahead-of-time build needed one asset per SM. What
-# is left is the CUDA major version, which decides the API the binary was
-# built against.
+    # One entry per tarball `.github/workflows/release.yml` builds — the filenames
+    # must match it exactly, since the indexer resolves them against the release's
+    # assets and pins their hashes. The archives hold the binary at their root,
+    # which is where `entrypoint` above says to find it.
+    #
+    # One build per (target, accelerator), and every accelerator a GPU: the models
+    # are too big for a CPU build to be worth shipping. There is no
+    # compute-capability axis: Burn compiles every kernel at runtime through
+    # CubeCL — NVRTC on CUDA, hiprtc on ROCm, SPIR-V on Vulkan, MSL on Metal — so
+    # one CUDA build serves every NVIDIA generation the installed driver can
+    # compile for, where candle's ahead-of-time build needed one asset per SM. What
+    # is left is the CUDA major version, which decides the API the binary was
+    # built against.
 
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
