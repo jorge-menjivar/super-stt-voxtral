@@ -374,7 +374,7 @@ impl VoxtralEngine {
             tokens.len(),
             started.elapsed()
         );
-        post_process_transcription(&text)
+        Ok(post_process_transcription(&text))
     }
 
     /// Hand the last transcription's working memory back to the driver.
@@ -533,7 +533,11 @@ fn resolve_files(dir: &Path) -> Result<ModelFiles> {
 }
 
 /// Clean up Voxtral output formatting artifacts.
-fn post_process_transcription(text: &str) -> Result<String> {
+///
+/// Audio with no speech in it decodes to nothing, or to a lone `.`. Both come
+/// back as an empty transcript, which the daemon reports as no speech rather
+/// than as a failed take.
+fn post_process_transcription(text: &str) -> String {
     let mut cleaned = text.trim().to_string();
     if cleaned.starts_with("\"'") || cleaned.starts_with("'\"") {
         cleaned = cleaned
@@ -548,13 +552,12 @@ fn post_process_transcription(text: &str) -> Result<String> {
     cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     cleaned = cleaned.replace(" \"' ", " ").replace(" '\" ", " ");
     if cleaned == "." || cleaned.trim().is_empty() {
-        anyhow::bail!("mel feature generation produced invalid output");
+        return String::new();
     }
-    cleaned = cleaned
+    cleaned
         .trim_end_matches('\'')
         .trim_end_matches('"')
-        .to_string();
-    Ok(cleaned)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -575,7 +578,7 @@ mod tests {
     #[test]
     fn post_process_trims_and_collapses_whitespace() {
         assert_eq!(
-            post_process_transcription("  hello   world  ").unwrap(),
+            post_process_transcription("  hello   world  "),
             "hello world"
         );
     }
@@ -614,32 +617,27 @@ mod tests {
 
     #[test]
     fn post_process_strips_leading_quote_apostrophe() {
-        assert_eq!(
-            post_process_transcription("\"'hello world").unwrap(),
-            "hello world"
-        );
-        assert_eq!(
-            post_process_transcription("'\"hello world").unwrap(),
-            "hello world"
-        );
+        assert_eq!(post_process_transcription("\"'hello world"), "hello world");
+        assert_eq!(post_process_transcription("'\"hello world"), "hello world");
     }
 
     #[test]
     fn post_process_strips_leading_apostrophe() {
-        assert_eq!(post_process_transcription("'hello").unwrap(), "hello");
+        assert_eq!(post_process_transcription("'hello"), "hello");
     }
 
     #[test]
     fn post_process_strips_trailing_quote_and_apostrophe() {
-        assert_eq!(post_process_transcription("hello\"").unwrap(), "hello");
-        assert_eq!(post_process_transcription("hello'").unwrap(), "hello");
+        assert_eq!(post_process_transcription("hello\""), "hello");
+        assert_eq!(post_process_transcription("hello'"), "hello");
     }
 
     #[test]
-    fn post_process_rejects_empty_and_bare_dot() {
-        assert!(post_process_transcription("").is_err());
-        assert!(post_process_transcription("    ").is_err());
-        assert!(post_process_transcription(".").is_err());
+    fn post_process_reads_no_speech_as_an_empty_transcript() {
+        assert_eq!(post_process_transcription(""), "");
+        assert_eq!(post_process_transcription("    "), "");
+        assert_eq!(post_process_transcription("."), "");
+        assert_eq!(post_process_transcription(" . "), "");
     }
 
     fn touch(dir: &Path, name: &str) {
