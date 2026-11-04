@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-#:schema https://jorge-menjivar.github.io/super-stt/backend.schema.json
+#:schema https://jorge-menjivar.github.io/super-voice/backend.schema.json
 # Voxtral (local, GPU) subprocess backend, on Burn. See docs/protocol/backend/.
 
 [backend]
@@ -9,8 +9,8 @@
     version = "0.2.0"
     kind = "subprocess"
     entrypoint = "super-stt-backend-voxtral"
-    contract = "v4"
-    product = "super-stt"
+    contract = "v1"
+    product = "super-voice"
     license = "GPL-3.0-only"
     description = "Local Voxtral speech-to-text."
 
@@ -71,6 +71,7 @@
 
 [[models]]
     name = "voxtral-mini-3b-2507"
+    role = "transcription"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
@@ -87,6 +88,7 @@
 
 [[models]]
     name = "voxtral-small-24b-2507"
+    role = "transcription"
     multilingual = true
     primary_language = "en"
     supported_languages = ["en", "es", "fr", "pt", "hi", "de", "nl", "it"]
