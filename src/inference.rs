@@ -568,7 +568,7 @@ mod tests {
         std::env::var("SUPER_STT_TEST_TEKKEN")
             .ok()
             .or_else(|| {
-                std::env::var("SUPER_STT_BACKEND_DIR")
+                std::env::var("SUPER_VOICE_BACKEND_DIR")
                     .ok()
                     .map(|d| format!("{d}/models/voxtral-mini-3b-2507/tekken.json"))
             })
@@ -587,7 +587,7 @@ mod tests {
     /// `[9909, 1058, 1262]`, or the transcription prompt would silently break
     /// on a tokenizer change.
     /// Tokenizer-only (no model/GPU); self-skips unless a `tekken.json` is
-    /// provisioned via `SUPER_STT_TEST_TEKKEN` or `SUPER_STT_BACKEND_DIR`.
+    /// provisioned via `SUPER_STT_TEST_TEKKEN` or `SUPER_VOICE_BACKEND_DIR`.
     #[test]
     fn lang_prompt_encoding_is_stable() {
         let Some(path) = tekken_path() else {

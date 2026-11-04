@@ -89,20 +89,20 @@ test *args:
 # `parity` to compare against: in f32, the reference, and in f16, the
 # precision the candle backend shipped in and the yardstick for the port's
 # own reduced precision. Needs the weights under
-# $SUPER_STT_BACKEND_DIR/models/voxtral-mini-3b-2507. About eight minutes and
+# $SUPER_VOICE_BACKEND_DIR/models/voxtral-mini-3b-2507. About eight minutes and
 # 40 GB of RAM (candle's model runs twice per dump, to check the tapped copy
 # against it); a dump that already exists is kept.
 parity-reference:
     #!/usr/bin/env bash
     set -euo pipefail
-    : "${SUPER_STT_BACKEND_DIR:?set SUPER_STT_BACKEND_DIR to a directory holding models/voxtral-mini-3b-2507}"
+    : "${SUPER_VOICE_BACKEND_DIR:?set SUPER_VOICE_BACKEND_DIR to a directory holding models/voxtral-mini-3b-2507}"
     (cd parity && cargo build --release --locked)
     mkdir -p "{{ parity_dir }}"
     for dtype in f32 f16; do
         out="{{ parity_dir }}/candle-$dtype.safetensors"
         if [ -f "$out" ]; then echo "already present: $out"; continue; fi
         parity/target/release/voxtral-candle-reference \
-            "$SUPER_STT_BACKEND_DIR/models/voxtral-mini-3b-2507" "{{ parity_clip }}" "$out" --dtype $dtype
+            "$SUPER_VOICE_BACKEND_DIR/models/voxtral-mini-3b-2507" "{{ parity_clip }}" "$out" --dtype $dtype
     done
 
 # Compare the Burn port against candle layer by layer and print the table,

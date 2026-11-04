@@ -8,7 +8,7 @@
 //!
 //! ```sh
 //! just parity                       # dumps with candle, then runs this
-//! SUPER_STT_PARITY_REF=<dump.safetensors> SUPER_STT_BACKEND_DIR=<dir> \
+//! SUPER_STT_PARITY_REF=<dump.safetensors> SUPER_VOICE_BACKEND_DIR=<dir> \
 //!   cargo test --release parity -- --nocapture
 //! ```
 //!
@@ -104,7 +104,7 @@ fn model_dir() -> Option<PathBuf> {
     std::env::var_os("SUPER_STT_PARITY_MODEL_DIR")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("SUPER_STT_BACKEND_DIR")
+            std::env::var_os("SUPER_VOICE_BACKEND_DIR")
                 .map(|d| Path::new(&d).join("models/voxtral-mini-3b-2507"))
         })
 }
@@ -115,7 +115,7 @@ fn layers_match_candle() {
     let Some(reference) = std::env::var_os("SUPER_STT_PARITY_REF") else {
         return; // no candle dump provisioned
     };
-    let model_dir = model_dir().expect("SUPER_STT_BACKEND_DIR or SUPER_STT_PARITY_MODEL_DIR");
+    let model_dir = model_dir().expect("SUPER_VOICE_BACKEND_DIR or SUPER_STT_PARITY_MODEL_DIR");
     let dtype = match std::env::var("SUPER_STT_PARITY_DTYPE").as_deref() {
         Ok("bf16") => DType::BF16,
         Ok("f16") => DType::F16,

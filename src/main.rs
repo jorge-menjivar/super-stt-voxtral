@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Voxtral subprocess backend: serves the Super STT `/v1` contract over a
-//! pathname Unix socket (`SUPER_STT_BACKEND_SOCKET`), loading the model from
-//! `SUPER_STT_BACKEND_DIR/models/<name>`. Self-contained — no super-stt deps.
+//! pathname Unix socket (`SUPER_VOICE_BACKEND_SOCKET`), loading the model from
+//! `SUPER_VOICE_BACKEND_DIR/models/<name>`. Self-contained — no super-stt deps.
 //!
 //! The model runs on Burn, whose GPU kernels CubeCL compiles at runtime and
-//! keeps in `SUPER_STT_BACKEND_CACHE_DIR` — the one writable directory a
+//! keeps in `SUPER_VOICE_BACKEND_CACHE_DIR` — the one writable directory a
 //! daemon new enough to grant it provides.
 
 // doc lint trips on prose like "candle"/"super-stt".
@@ -93,7 +93,7 @@ struct AppState {
 
 /// Names the one writable directory the sandbox grants, where the compiled
 /// kernels go. Absent when the daemon grants none.
-const ENV_CACHE_DIR: &str = "SUPER_STT_BACKEND_CACHE_DIR";
+const ENV_CACHE_DIR: &str = "SUPER_VOICE_BACKEND_CACHE_DIR";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -118,10 +118,10 @@ async fn main() -> anyhow::Result<()> {
     }
     inference::configure_cubecl(cache_dir.as_deref());
 
-    let socket = std::env::var("SUPER_STT_BACKEND_SOCKET")
-        .context("SUPER_STT_BACKEND_SOCKET must be set")?;
+    let socket = std::env::var("SUPER_VOICE_BACKEND_SOCKET")
+        .context("SUPER_VOICE_BACKEND_SOCKET must be set")?;
     let backend_dir =
-        std::env::var("SUPER_STT_BACKEND_DIR").context("SUPER_STT_BACKEND_DIR must be set")?;
+        std::env::var("SUPER_VOICE_BACKEND_DIR").context("SUPER_VOICE_BACKEND_DIR must be set")?;
 
     let state = Arc::new(AppState {
         backend_dir: PathBuf::from(backend_dir),
