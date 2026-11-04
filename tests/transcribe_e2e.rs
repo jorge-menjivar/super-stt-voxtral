@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Gated real-model E2E (GPU). Provision `models/voxtral-mini-3b-2507` under
-//! SUPER_STT_BACKEND_DIR, then run with a GPU build:
-//!   SUPER_STT_TEST_VOXTRAL=1 SUPER_STT_BACKEND_DIR=<dir> \
+//! SUPER_VOICE_BACKEND_DIR, then run with a GPU build:
+//!   SUPER_STT_TEST_VOXTRAL=1 SUPER_VOICE_BACKEND_DIR=<dir> \
 //!   SUPER_STT_TEST_AUDIO=<wav> cargo test --release --no-default-features --features cuda \
 //!     --test transcribe_e2e -- --nocapture
 
@@ -34,12 +34,12 @@ async fn transcribe_real_model() {
         return; // self-skip unless explicitly enabled
     }
     let backend_dir = PathBuf::from(
-        std::env::var("SUPER_STT_BACKEND_DIR")
-            .expect("SUPER_STT_BACKEND_DIR (must contain models/voxtral-mini-3b-2507)"),
+        std::env::var("SUPER_VOICE_BACKEND_DIR")
+            .expect("SUPER_VOICE_BACKEND_DIR (must contain models/voxtral-mini-3b-2507)"),
     );
     assert!(
         backend_dir.join("models/voxtral-mini-3b-2507").exists(),
-        "provision models/voxtral-mini-3b-2507 under SUPER_STT_BACKEND_DIR first"
+        "provision models/voxtral-mini-3b-2507 under SUPER_VOICE_BACKEND_DIR first"
     );
     let audio_path = std::env::var("SUPER_STT_TEST_AUDIO").expect("SUPER_STT_TEST_AUDIO");
 

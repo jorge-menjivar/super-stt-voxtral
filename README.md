@@ -112,7 +112,7 @@ transcription of silence: the first real request then finds everything ready.
 The warm-up runs at the shapes of a clip under 30 seconds. A longer one meets
 new shapes, and the first such clip on a machine compiles and tunes them,
 about 70 seconds for a 34-second clip, before the cache holds them too.
-Compiled kernels are kept in `SUPER_STT_BACKEND_CACHE_DIR` when the daemon
+Compiled kernels are kept in `SUPER_VOICE_BACKEND_CACHE_DIR` when the daemon
 grants one — everything else the sandbox exposes is read-only — so only the
 first load of a build pays; without it the backend logs a warning and
 recompiles on every load.
@@ -163,7 +163,7 @@ every decoding step), the largest absolute difference, the relative L2 error
 and the cosine distance:
 
 ```bash
-export SUPER_STT_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
+export SUPER_VOICE_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
 just parity                                              # Vulkan, f16
 just parity f16 --no-default-features --features cuda    # CUDA, f16
 ```
