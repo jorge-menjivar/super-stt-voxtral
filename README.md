@@ -1,6 +1,6 @@
 # Super Voice — Voxtral backend
 
-[![coverage](https://img.shields.io/endpoint?url=https://jorge-menjivar.github.io/super-stt-voxtral/coverage.json)](https://jorge-menjivar.github.io/super-stt-voxtral/)
+[![coverage](https://img.shields.io/endpoint?url=https://super-libre.github.io/super-voice-voxtral/coverage.json)](https://super-libre.github.io/super-voice-voxtral/)
 
 Mistral's [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)
 speech recognition models, Voxtral Mini 3B and Voxtral Small 24B, as a
