@@ -25,6 +25,14 @@
 [network]
     allowed_hosts = []
 
+# The user's dictation context. Voxtral's transcription prompt has no place for
+# it, so its vocabulary (`x-voice-vocabulary`) is applied to the transcript:
+# a term written differently, or misspelled in its vowels, is written as the
+# vocabulary spells it (see src/vocabulary.rs). The prompt is sent too and not
+# read.
+[capabilities]
+    context = true
+
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
     target = "x86_64-unknown-linux-gnu"

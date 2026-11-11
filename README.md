@@ -30,6 +30,15 @@ load.
 | `voxtral-mini-3b-2507`   | [Voxtral Mini 3B](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)     | ~12 GB |
 | `voxtral-small-24b-2507` | [Voxtral Small 24B](https://huggingface.co/mistralai/Voxtral-Small-24B-2507) | ~52 GB |
 
+## Your vocabulary
+
+The vocabulary you give Super Voice spells Voxtral's transcripts. A term the
+model wrote differently, `cube CL` or `QWEN`, is written your way, and so is
+one it misspelled only in its vowels, `Kakaro` for `Kokoro`. A word that
+differs in a consonant is left alone, since it may be another word. Voxtral's
+transcription mode has no place for a prompt, so the context's prompt is not
+used.
+
 ## What's in here
 
 A small, self-contained Rust program that loads a Voxtral model and speaks the

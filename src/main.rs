@@ -16,6 +16,7 @@
 
 mod inference;
 mod progress;
+mod vocabulary;
 mod voxtral;
 
 use std::path::PathBuf;
@@ -413,9 +414,11 @@ struct TranscribeReq {
     language: Option<String>,
 }
 
+/// `POST /v1/transcribe`. The transcript is spelled by the vocabulary of the
+/// dictation context the request carries, if any (see [`vocabulary`]).
 async fn transcribe(
     State(s): State<Arc<AppState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<TranscribeReq>,
 ) -> (StatusCode, Json<Value>) {
     if !matches!(s.status.lock().unwrap().state, LoadState::Ready) {
@@ -433,6 +436,7 @@ async fn transcribe(
             Json(json!({ "status": "error", "message": "invalid_audio" })),
         );
     }
+    let vocabulary = vocabulary::Vocabulary::from_headers(&headers);
     let sample_rate = req.sample_rate.unwrap_or(16000);
     let audio = req.audio_data;
     let language = req.language;
@@ -463,7 +467,7 @@ async fn transcribe(
     match result {
         Ok(Ok(text)) => (
             StatusCode::OK,
-            Json(json!({ "status": "success", "transcription": text })),
+            Json(json!({ "status": "success", "transcription": vocabulary.spell(&text) })),
         ),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
