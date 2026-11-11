@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Minimal "mock daemon": spawns the real backend binary and drives the `/v1`
 //! contract over the Unix socket the same way the daemon does. Self-contained —
-//! no `super-stt` dependency.
+//! no `super-voice` dependency.
 
 #![allow(dead_code)] // each test file uses a subset
 
@@ -23,16 +23,47 @@ pub struct Backend {
     socket: PathBuf,
 }
 
+/// The daemon a backend is started by, which decides how its variables are
+/// spelled.
+#[derive(Clone, Copy)]
+pub enum Daemon {
+    /// `SUPER_VOICE_BACKEND_*`.
+    SuperVoice,
+    /// `SUPER_STT_BACKEND_*`, from a Super STT release.
+    SuperStt,
+}
+
+impl Daemon {
+    fn var(self, name: &str) -> String {
+        match self {
+            Self::SuperVoice => format!("SUPER_VOICE_BACKEND_{name}"),
+            Self::SuperStt => format!("SUPER_STT_BACKEND_{name}"),
+        }
+    }
+}
+
 impl Backend {
     /// Spawn the backend binary against `backend_dir`; wait until `/v1/ping` answers.
     pub async fn spawn(backend_dir: &Path) -> Backend {
+        Self::spawn_by(Daemon::SuperVoice, backend_dir).await
+    }
+
+    /// [`Self::spawn`], as `daemon` would start it.
+    pub async fn spawn_by(daemon: Daemon, backend_dir: &Path) -> Backend {
         let idx = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
         let socket =
             std::env::temp_dir().join(format!("voxtral-test-{}-{idx}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket);
-        let child = Command::new(env!("CARGO_BIN_EXE_super-stt-backend-voxtral"))
-            .env("SUPER_STT_BACKEND_SOCKET", &socket)
-            .env("SUPER_STT_BACKEND_DIR", backend_dir)
+        let mut command = Command::new(env!("CARGO_BIN_EXE_super-voice-backend-voxtral"));
+        // Neither spelling comes in from the environment the tests run in.
+        for name in ["SOCKET", "DIR", "CACHE_DIR"] {
+            for spelling in [Daemon::SuperVoice, Daemon::SuperStt] {
+                command.env_remove(spelling.var(name));
+            }
+        }
+        let child = command
+            .env(daemon.var("SOCKET"), &socket)
+            .env(daemon.var("DIR"), backend_dir)
             .env("RUST_LOG", "warn")
             .spawn()
             .expect("spawn backend binary");
@@ -77,7 +108,7 @@ impl Backend {
             .uri(path)
             .header("host", "backend.local")
             .header("content-type", "application/json")
-            .header("x-stt-model", "voxtral-mini-3b-2507")
+            .header("x-voice-model", "voxtral-mini-3b-2507")
             .body(Full::new(Bytes::from(body)))
             .unwrap();
         let resp = sender

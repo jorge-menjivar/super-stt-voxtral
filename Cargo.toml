@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Standalone Voxtral subprocess backend. Depends only on third-party crates —
-# no super-stt code. Excluded from the workspace (own Cargo.lock).
+# no Super Voice code. Excluded from the workspace (own Cargo.lock).
 
 [package]
-    name = "super-stt-backend-voxtral"
+    name = "super-voice-backend-voxtral"
     version = "0.2.0"
     edition = "2024"
-    description = "Voxtral speech-to-text backend for Super STT."
+    description = "Voxtral speech-to-text backend for Super Voice."
     repository = "https://github.com/jorge-menjivar/super-stt-voxtral"
     license = "GPL-3.0-only"
     publish = false
@@ -15,7 +15,7 @@
 [workspace]
 
 [[bin]]
-    name = "super-stt-backend-voxtral"
+    name = "super-voice-backend-voxtral"
     path = "src/main.rs"
 
 [dependencies]

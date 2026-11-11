@@ -8,11 +8,11 @@
 //!
 //! ```sh
 //! just parity                       # dumps with candle, then runs this
-//! SUPER_STT_PARITY_REF=<dump.safetensors> SUPER_STT_BACKEND_DIR=<dir> \
+//! SUPER_VOICE_PARITY_REF=<dump.safetensors> SUPER_VOICE_BACKEND_DIR=<dir> \
 //!   cargo test --release parity -- --nocapture
 //! ```
 //!
-//! `SUPER_STT_PARITY_DTYPE` picks the port's dtype, `f32` by default. What is
+//! `SUPER_VOICE_PARITY_DTYPE` picks the port's dtype, `f32` by default. What is
 //! held depends on it:
 //!
 //! - f32 on a GPU is not quite f32: tensor cores round matmul inputs to TF32,
@@ -23,7 +23,7 @@
 //! The greedy tokens must match candle's in every case.
 //!
 //! What a narrower type *should* cost is what it costs candle, so
-//! `SUPER_STT_PARITY_BASELINE` takes a second dump — candle over the same clip
+//! `SUPER_VOICE_PARITY_BASELINE` takes a second dump — candle over the same clip
 //! in f16 — and adds its distance from the f32 reference to every row. A port
 //! drifting further than that is doing something candle does not.
 //!
@@ -101,10 +101,10 @@ fn u32s(st: &SafeTensors<'_>, name: &str) -> Vec<u32> {
 }
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var_os("SUPER_STT_PARITY_MODEL_DIR")
+    std::env::var_os("SUPER_VOICE_PARITY_MODEL_DIR")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("SUPER_STT_BACKEND_DIR")
+            std::env::var_os("SUPER_VOICE_BACKEND_DIR")
                 .map(|d| Path::new(&d).join("models/voxtral-mini-3b-2507"))
         })
 }
@@ -112,20 +112,20 @@ fn model_dir() -> Option<PathBuf> {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn layers_match_candle() {
-    let Some(reference) = std::env::var_os("SUPER_STT_PARITY_REF") else {
+    let Some(reference) = std::env::var_os("SUPER_VOICE_PARITY_REF") else {
         return; // no candle dump provisioned
     };
-    let model_dir = model_dir().expect("SUPER_STT_BACKEND_DIR or SUPER_STT_PARITY_MODEL_DIR");
-    let dtype = match std::env::var("SUPER_STT_PARITY_DTYPE").as_deref() {
+    let model_dir = model_dir().expect("SUPER_VOICE_BACKEND_DIR or SUPER_VOICE_PARITY_MODEL_DIR");
+    let dtype = match std::env::var("SUPER_VOICE_PARITY_DTYPE").as_deref() {
         Ok("bf16") => DType::BF16,
         Ok("f16") => DType::F16,
         Ok("f32") | Err(_) => DType::F32,
-        Ok(other) => panic!("SUPER_STT_PARITY_DTYPE takes f32, bf16 or f16, not {other}"),
+        Ok(other) => panic!("SUPER_VOICE_PARITY_DTYPE takes f32, bf16 or f16, not {other}"),
     };
     let strict = dtype == DType::F32;
     let bytes = std::fs::read(&reference).expect("reading the candle dump");
     let st = SafeTensors::deserialize(&bytes).expect("parsing the candle dump");
-    let baseline_bytes = std::env::var_os("SUPER_STT_PARITY_BASELINE")
+    let baseline_bytes = std::env::var_os("SUPER_VOICE_PARITY_BASELINE")
         .map(|path| std::fs::read(path).expect("reading the baseline dump"));
     let baseline = baseline_bytes
         .as_deref()

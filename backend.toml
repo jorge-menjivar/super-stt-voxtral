@@ -1,21 +1,37 @@
 # SPDX-License-Identifier: GPL-3.0-only
-#:schema https://jorge-menjivar.github.io/super-stt/backend.schema.json
+#:schema https://jorge-menjivar.github.io/super-voice/backend.schema.json
 # Voxtral (local, GPU) subprocess backend, on Burn. See docs/protocol/backend/.
 
 [backend]
-    id = "app.super-stt.voxtral"
+    # The id names the install directory. No release before this one declared
+    # an id; an install of one moves to this directory on update and keeps its
+    # models, because the daemon finds it by `source`.
+    id = "app.super-voice.voxtral"
+    # The backend's identity: installed copies find their updates by it, and a
+    # selected model is named by it. It stays as it is when the repository is
+    # renamed, which GitHub redirects.
     source = "github.com/jorge-menjivar/super-stt-voxtral"
     name = "Voxtral"
     version = "0.2.0"
     kind = "subprocess"
-    entrypoint = "super-stt-backend-voxtral"
+    entrypoint = "super-voice-backend-voxtral"
     contract = "v4"
+    # Super STT releases refuse any other product, and Super Voice reads this
+    # one as its own.
     product = "super-stt"
     license = "GPL-3.0-only"
     description = "Local Voxtral speech-to-text."
 
 [network]
     allowed_hosts = []
+
+# The user's dictation context. Voxtral's transcription prompt has no place for
+# it, so its vocabulary (`x-voice-vocabulary`) is applied to the transcript:
+# a term written differently, or misspelled in its vowels, is written as the
+# vocabulary spells it (see src/vocabulary.rs). The prompt is sent too and not
+# read.
+[capabilities]
+    context = true
 
 [[assets.subprocess]]
     file = "voxtral-x86_64-unknown-linux-gnu-cuda12.tar.gz"
@@ -36,7 +52,7 @@
 # is claimed to work on, which the schema requires to be explicit. A card
 # outside it gets the Vulkan build.
 [[assets.subprocess]]
-    file = "qwen3-asr-x86_64-unknown-linux-gnu-rocm.tar.gz"
+    file = "voxtral-x86_64-unknown-linux-gnu-rocm.tar.gz"
     target = "x86_64-unknown-linux-gnu"
     accel = "rocm"
     gfx = [

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Gated real-model E2E (GPU). Provision `models/voxtral-mini-3b-2507` under
-//! SUPER_STT_BACKEND_DIR, then run with a GPU build:
-//!   SUPER_STT_TEST_VOXTRAL=1 SUPER_STT_BACKEND_DIR=<dir> \
-//!   SUPER_STT_TEST_AUDIO=<wav> cargo test --release --no-default-features --features cuda \
+//! SUPER_VOICE_BACKEND_DIR, then run with a GPU build:
+//!   SUPER_VOICE_TEST_VOXTRAL=1 SUPER_VOICE_BACKEND_DIR=<dir> \
+//!   SUPER_VOICE_TEST_AUDIO=<wav> cargo test --release --no-default-features --features cuda \
 //!     --test transcribe_e2e -- --nocapture
 
 #![allow(clippy::doc_markdown)] // env var names in shell-command doc comment
@@ -30,18 +30,18 @@ fn read_wav_mono_f32(path: &str) -> (Vec<f32>, u32) {
 
 #[tokio::test]
 async fn transcribe_real_model() {
-    if std::env::var("SUPER_STT_TEST_VOXTRAL").is_err() {
+    if std::env::var("SUPER_VOICE_TEST_VOXTRAL").is_err() {
         return; // self-skip unless explicitly enabled
     }
     let backend_dir = PathBuf::from(
-        std::env::var("SUPER_STT_BACKEND_DIR")
-            .expect("SUPER_STT_BACKEND_DIR (must contain models/voxtral-mini-3b-2507)"),
+        std::env::var("SUPER_VOICE_BACKEND_DIR")
+            .expect("SUPER_VOICE_BACKEND_DIR (must contain models/voxtral-mini-3b-2507)"),
     );
     assert!(
         backend_dir.join("models/voxtral-mini-3b-2507").exists(),
-        "provision models/voxtral-mini-3b-2507 under SUPER_STT_BACKEND_DIR first"
+        "provision models/voxtral-mini-3b-2507 under SUPER_VOICE_BACKEND_DIR first"
     );
-    let audio_path = std::env::var("SUPER_STT_TEST_AUDIO").expect("SUPER_STT_TEST_AUDIO");
+    let audio_path = std::env::var("SUPER_VOICE_TEST_AUDIO").expect("SUPER_VOICE_TEST_AUDIO");
 
     let backend = Backend::spawn(&backend_dir).await;
     assert_eq!(backend.load("voxtral-mini-3b-2507", "").await, 202);
@@ -55,7 +55,7 @@ async fn transcribe_real_model() {
     let text = body["transcription"].as_str().unwrap_or("");
     println!("=== VOXTRAL TRANSCRIPTION ===\n{text}\n=============================");
     assert!(!text.trim().is_empty(), "expected non-empty transcription");
-    if let Ok(expect) = std::env::var("SUPER_STT_TEST_EXPECT") {
+    if let Ok(expect) = std::env::var("SUPER_VOICE_TEST_EXPECT") {
         assert!(
             text.to_lowercase().contains(&expect.to_lowercase()),
             "transcription {text:?} did not contain {expect:?}"
