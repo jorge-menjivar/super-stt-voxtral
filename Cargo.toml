@@ -7,7 +7,7 @@
     version = "0.2.0"
     edition = "2024"
     description = "Voxtral speech-to-text backend for Super Voice."
-    repository = "https://github.com/jorge-menjivar/super-stt-voxtral"
+    repository = "https://github.com/super-libre/super-voice-voxtral"
     license = "GPL-3.0-only"
     publish = false
 
