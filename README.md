@@ -1,25 +1,25 @@
-# Super STT — Voxtral backend
+# Super Voice — Voxtral backend
 
 [![coverage](https://img.shields.io/endpoint?url=https://jorge-menjivar.github.io/super-stt-voxtral/coverage.json)](https://jorge-menjivar.github.io/super-stt-voxtral/)
 
-A speech-to-text backend for **[Super STT](https://github.com/jorge-menjivar/super-stt)**.
+A speech-to-text backend for **[Super Voice](https://github.com/jorge-menjivar/super-voice)**.
 It runs [Mistral's Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507)
 models locally on your GPU to turn speech into text.
 
-Super STT is an on-device speech-to-text engine. It doesn't ship any models of
+Super Voice is an on-device speech engine. It doesn't ship any models of
 its own — it loads **backends** like this one at runtime. This repo packages the
 Voxtral models (Voxtral Mini 3B and Voxtral Small 24B) as one of those backends.
 
 ## Using it
 
-You don't run this directly. Super STT discovers it through its backend
+You don't run this directly. Super Voice discovers it through its backend
 registry, downloads a prebuilt release for your platform, fetches the model
-weights, and runs it sandboxed. To use Voxtral, install Super STT and enable it
-from the app — see the [Super STT docs](https://github.com/jorge-menjivar/super-stt).
+weights, and runs it sandboxed. To use Voxtral, install Super Voice and enable it
+from the app — see the [Super Voice docs](https://github.com/jorge-menjivar/super-voice).
 
 ## Models
 
-Two models, chosen by `name` when Super STT loads the backend. Both need a GPU
+Two models, chosen by `name` when Super Voice loads the backend. Both need a GPU
 — NVIDIA through CUDA, AMD through ROCm, Apple Silicon through Metal, or
 anything else through Vulkan. There is no CPU build: the models are too big for
 one to be worth shipping. The weights are pulled from Hugging Face on first
@@ -33,8 +33,8 @@ load.
 ## What's in here
 
 A small, self-contained Rust program that loads a Voxtral model and speaks the
-Super STT backend protocol (a tiny HTTP API over a Unix socket). It shares no
-code with the Super STT project.
+Super Voice backend protocol (a tiny HTTP API over a Unix socket). It shares no
+code with the Super Voice project.
 
 The model runs on [Burn](https://github.com/tracel-ai/burn). Its GPU kernels are
 compiled at runtime by CubeCL, so one binary per accelerator covers every GPU
@@ -94,7 +94,7 @@ shares 16 GB with its CPU, transcribes both clips word for word as CUDA does:
 that chip. It peaks at 12 GB of the shared memory. Its first load takes about
 12 minutes, and a later one 5.5, most of it reading the weights. Its longest
 pause in load progress, 106 s, is the closest any build comes to the 120 s
-after which Super STT gives up on a load. The board needs its patched amdgpu
+after which Super Voice gives up on a load. The board needs its patched amdgpu
 driver (`flush_pasid_uses_kiq` off, ROCm issue 6313): on the stock one, a load
 hangs the GPU.
 
@@ -112,12 +112,12 @@ transcription of silence: the first real request then finds everything ready.
 The warm-up runs at the shapes of a clip under 30 seconds. A longer one meets
 new shapes, and the first such clip on a machine compiles and tunes them,
 about 70 seconds for a 34-second clip, before the cache holds them too.
-Compiled kernels are kept in `SUPER_STT_BACKEND_CACHE_DIR` when the daemon
+Compiled kernels are kept in `SUPER_VOICE_BACKEND_CACHE_DIR` when the daemon
 grants one — everything else the sandbox exposes is read-only — so only the
 first load of a build pays; without it the backend logs a warning and
 recompiles on every load.
 
-Super STT can have the kernels built before the weights arrive. `POST
+Super Voice can have the kernels built before the weights arrive. `POST
 /v1/prepare`, with the body of `/v1/load`, builds them from the model's
 `config.json` and `tekken.json` alone, which the manifest lists as its
 `prepare_files`. The status reads `preparing`, then `prepared`. A load sent
@@ -128,7 +128,7 @@ load peaks at 12.0 and 11.4 GiB. See `docs/port-notes.md`.
 
 ## Building from source
 
-Most people never need to — Super STT downloads prebuilt releases. For
+Most people never need to — Super Voice downloads prebuilt releases. For
 development (requires [`just`](https://github.com/casey/just)):
 
 ```bash
@@ -163,7 +163,7 @@ every decoding step), the largest absolute difference, the relative L2 error
 and the cosine distance:
 
 ```bash
-export SUPER_STT_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
+export SUPER_VOICE_BACKEND_DIR=<dir holding models/voxtral-mini-3b-2507>
 just parity                                              # Vulkan, f16
 just parity f16 --no-default-features --features cuda    # CUDA, f16
 ```

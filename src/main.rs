@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Voxtral subprocess backend: serves the Super STT `/v1` contract over a
-//! pathname Unix socket (`SUPER_STT_BACKEND_SOCKET`), loading the model from
-//! `SUPER_STT_BACKEND_DIR/models/<name>`. Self-contained — no super-stt deps.
+//! Voxtral subprocess backend: serves the Super Voice `/v1` contract over a
+//! pathname Unix socket (`SUPER_VOICE_BACKEND_SOCKET`), loading the model from
+//! `SUPER_VOICE_BACKEND_DIR/models/<name>`. Self-contained — no Super Voice
+//! deps.
 //!
 //! The model runs on Burn, whose GPU kernels CubeCL compiles at runtime and
-//! keeps in `SUPER_STT_BACKEND_CACHE_DIR` — the one writable directory a
+//! keeps in `SUPER_VOICE_BACKEND_CACHE_DIR` — the one writable directory a
 //! daemon new enough to grant it provides.
+//!
+//! A Super STT daemon names the same variables `SUPER_STT_BACKEND_*`; see
+//! [`backend_var`].
 
-// doc lint trips on prose like "candle"/"super-stt".
+// doc lint trips on prose like "candle"/"super-voice".
 #![allow(clippy::doc_markdown)]
 
 mod inference;
@@ -91,9 +95,24 @@ struct AppState {
     prepare: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
+/// Names the Unix socket to bind.
+const ENV_SOCKET: &str = "SUPER_VOICE_BACKEND_SOCKET";
+/// Names the backend's own directory.
+const ENV_DIR: &str = "SUPER_VOICE_BACKEND_DIR";
 /// Names the one writable directory the sandbox grants, where the compiled
 /// kernels go. Absent when the daemon grants none.
-const ENV_CACHE_DIR: &str = "SUPER_STT_BACKEND_CACHE_DIR";
+const ENV_CACHE_DIR: &str = "SUPER_VOICE_BACKEND_CACHE_DIR";
+
+/// One of the `ENV_*` variables, or its Super STT spelling when it is not set.
+///
+/// A Super Voice daemon sets both spellings. A Super STT daemon sets only
+/// `SUPER_STT_BACKEND_*`, and its releases are still installed.
+fn backend_var(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).or_else(|| {
+        let rest = name.strip_prefix("SUPER_VOICE_")?;
+        std::env::var_os(format!("SUPER_STT_{rest}"))
+    })
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -108,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
     // Before anything touches a device: CubeCL's configuration, which says
     // where compiled kernels are kept and which stream work runs on, is frozen
     // the first time it is read.
-    let cache_dir = std::env::var_os(ENV_CACHE_DIR).map(PathBuf::from);
+    let cache_dir = backend_var(ENV_CACHE_DIR).map(PathBuf::from);
     match &cache_dir {
         Some(dir) => log::info!("keeping compiled kernels in {}", dir.display()),
         None => log::warn!(
@@ -118,10 +137,10 @@ async fn main() -> anyhow::Result<()> {
     }
     inference::configure_cubecl(cache_dir.as_deref());
 
-    let socket = std::env::var("SUPER_STT_BACKEND_SOCKET")
-        .context("SUPER_STT_BACKEND_SOCKET must be set")?;
-    let backend_dir =
-        std::env::var("SUPER_STT_BACKEND_DIR").context("SUPER_STT_BACKEND_DIR must be set")?;
+    let socket = backend_var(ENV_SOCKET)
+        .and_then(|s| s.into_string().ok())
+        .with_context(|| format!("{ENV_SOCKET} must be set"))?;
+    let backend_dir = backend_var(ENV_DIR).with_context(|| format!("{ENV_DIR} must be set"))?;
 
     let state = Arc::new(AppState {
         backend_dir: PathBuf::from(backend_dir),

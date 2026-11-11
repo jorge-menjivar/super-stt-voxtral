@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Task runner for the standalone Voxtral backend. Mirrors the recipe names used
-# by the main super-stt repo (`just check`, etc.).
+# by the main Super Voice repo (`just check`, etc.).
 #
 # The model runs on Burn, pinned by revision to a fork in Cargo.toml. The first
 # build fetches and compiles it, which is slow; nothing else about the build is
@@ -53,15 +53,15 @@ build-metal *args:
 # same name, so a local install and a published one stage the same bytes under
 # the same name. Usage: just stage [--no-default-features --features cuda]
 stage *args: (build-release args)
-    cp target/release/super-stt-backend-voxtral super-stt-backend-voxtral
-    @echo "staged super-stt-backend-voxtral — this directory is now installable with Import from dir"
+    cp target/release/super-voice-backend-voxtral super-voice-backend-voxtral
+    @echo "staged super-voice-backend-voxtral — this directory is now installable with Import from dir"
 
 # Remove build output, the candle reference's included.
 clean:
     cargo clean
     cd parity && cargo clean
 
-# Runs a clippy check — mirrors super-stt's lint. Default features lint the
+# Runs a clippy check — mirrors Super Voice's lint. Default features lint the
 # Vulkan build, which compiles every line of the backend's own code but the
 # other accelerators' arms of `select_device`; they differ only in which Burn
 # feature is on.
@@ -89,20 +89,20 @@ test *args:
 # `parity` to compare against: in f32, the reference, and in f16, the
 # precision the candle backend shipped in and the yardstick for the port's
 # own reduced precision. Needs the weights under
-# $SUPER_STT_BACKEND_DIR/models/voxtral-mini-3b-2507. About eight minutes and
+# $SUPER_VOICE_BACKEND_DIR/models/voxtral-mini-3b-2507. About eight minutes and
 # 40 GB of RAM (candle's model runs twice per dump, to check the tapped copy
 # against it); a dump that already exists is kept.
 parity-reference:
     #!/usr/bin/env bash
     set -euo pipefail
-    : "${SUPER_STT_BACKEND_DIR:?set SUPER_STT_BACKEND_DIR to a directory holding models/voxtral-mini-3b-2507}"
+    : "${SUPER_VOICE_BACKEND_DIR:?set SUPER_VOICE_BACKEND_DIR to a directory holding models/voxtral-mini-3b-2507}"
     (cd parity && cargo build --release --locked)
     mkdir -p "{{ parity_dir }}"
     for dtype in f32 f16; do
         out="{{ parity_dir }}/candle-$dtype.safetensors"
         if [ -f "$out" ]; then echo "already present: $out"; continue; fi
         parity/target/release/voxtral-candle-reference \
-            "$SUPER_STT_BACKEND_DIR/models/voxtral-mini-3b-2507" "{{ parity_clip }}" "$out" --dtype $dtype
+            "$SUPER_VOICE_BACKEND_DIR/models/voxtral-mini-3b-2507" "{{ parity_clip }}" "$out" --dtype $dtype
     done
 
 # Compare the Burn port against candle layer by layer and print the table,
@@ -111,9 +111,9 @@ parity-reference:
 # of weights want a 24 GB card.
 # Usage: just parity [f16|bf16|f32] [--no-default-features --features cuda]
 parity dtype="f16" *args: parity-reference
-    SUPER_STT_PARITY_REF="{{ parity_dir }}/candle-f32.safetensors" \
-    SUPER_STT_PARITY_BASELINE="{{ parity_dir }}/candle-f16.safetensors" \
-    SUPER_STT_PARITY_DTYPE={{ dtype }} \
+    SUPER_VOICE_PARITY_REF="{{ parity_dir }}/candle-f32.safetensors" \
+    SUPER_VOICE_PARITY_BASELINE="{{ parity_dir }}/candle-f16.safetensors" \
+    SUPER_VOICE_PARITY_DTYPE={{ dtype }} \
         cargo test --release --locked {{ args }} layers_match_candle -- --nocapture
 
 # Measure code coverage (requires cargo-llvm-cov). --remap-path-prefix keeps the

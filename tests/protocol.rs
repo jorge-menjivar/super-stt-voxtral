@@ -5,7 +5,7 @@
 //! weights before it touches the device — runs in CI.
 
 mod common;
-use common::Backend;
+use common::{Backend, Daemon};
 use std::time::Duration;
 
 #[tokio::test]
@@ -41,4 +41,18 @@ async fn load_without_weights_reports_error() {
         s.get("reason").and_then(|r| r.as_str()).is_some(),
         "error state must carry a reason: {s}"
     );
+}
+
+/// Super STT releases are still installed, and their daemon spells the
+/// variables `SUPER_STT_BACKEND_*`: the backend starts under those names too.
+#[tokio::test]
+async fn starts_under_the_super_stt_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::spawn_by(Daemon::SuperStt, dir.path()).await;
+    let (code, _) = backend
+        .request("GET", "/v1/ping", Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(code, 200);
+    assert_eq!(backend.status().await["state"], "starting");
 }
